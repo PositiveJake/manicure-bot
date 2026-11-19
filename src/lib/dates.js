@@ -60,6 +60,13 @@ export function daysInMonth(year, month) {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
+export function monthBounds(ym) {
+  const year = Math.floor(ym / 100);
+  const month = ym % 100;
+  const prefix = `${year}-${pad2(month)}`;
+  return { first: `${prefix}-01`, last: `${prefix}-${daysInMonth(year, month)}` };
+}
+
 // 0 = понедельник … 6 = воскресенье
 export function weekdayIndex(ymdStr) {
   return (dateFromYmd(ymdStr).getUTCDay() + 6) % 7;

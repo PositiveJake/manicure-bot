@@ -57,6 +57,7 @@ export async function createBooking(db, tgId, dateIso, time, isOwner = false) {
     SELECT tg_id, ${dateIso}, ${time}, ${nowIso()}
     FROM users WHERE tg_id = ${tgId} AND (is_blocked = 0 OR ${isOwner ? 1 : 0})
       AND phone_verified = 1 AND phone <> ''
+      AND NOT EXISTS (SELECT 1 FROM closed_slots WHERE date = ${dateIso} AND time = ${time})
       AND NOT EXISTS (
         SELECT 1 FROM bookings
         WHERE date = ${dateIso} AND ABS(unixepoch(time) - unixepoch(${time})) < ${APPOINTMENT_MINUTES * 60}
@@ -86,9 +87,42 @@ export async function getUserBookings(db, tgId, todayIso, nowHm) {
     ORDER BY date, time`);
 }
 
-export async function getBookedTimesBetween(db, dayFrom, dayTo) {
+export async function getSlotOccupancy(db, dayFrom, dayTo) {
   return await db.all(sql`
-    SELECT date, time FROM bookings WHERE date BETWEEN ${dayFrom} AND ${dayTo}`);
+    SELECT date, time, 0 AS closed FROM bookings WHERE date BETWEEN ${dayFrom} AND ${dayTo}
+    UNION ALL
+    SELECT date, time, 1 AS closed FROM closed_slots WHERE date BETWEEN ${dayFrom} AND ${dayTo}`);
+}
+
+export async function closeSlot(db, date, time) {
+  const result = await db.run(sql`
+    INSERT INTO closed_slots (date, time)
+    SELECT ${date}, ${time}
+    WHERE NOT EXISTS (
+      SELECT 1 FROM bookings
+      WHERE date = ${date} AND ABS(unixepoch(time) - unixepoch(${time})) < ${APPOINTMENT_MINUTES * 60}
+    )
+    ON CONFLICT (date, time) DO NOTHING`);
+  return result.rowsAffected > 0;
+}
+
+export async function reopenSlot(db, date, time) {
+  await db.run(sql`DELETE FROM closed_slots WHERE date = ${date} AND time = ${time}`);
+}
+
+export async function claimMonthNotice(db, month, ownerId, now, until) {
+  const result = await db.run(sql`
+    INSERT INTO month_notices (month, owner_id, lease_until)
+    VALUES (${month}, ${ownerId}, ${until})
+    ON CONFLICT (month, owner_id) DO UPDATE SET lease_until = excluded.lease_until
+    WHERE month_notices.sent = 0 AND month_notices.lease_until <= ${now}`);
+  return result.rowsAffected > 0;
+}
+
+export async function markMonthNoticeSent(db, month, ownerId, until) {
+  await db.run(sql`
+    UPDATE month_notices SET sent = 1
+    WHERE month = ${month} AND owner_id = ${ownerId} AND lease_until = ${until}`);
 }
 
 export async function getDayCounts(db, dayFrom, dayTo) {
@@ -105,12 +139,19 @@ export async function getBookingsForDay(db, dayIso) {
     WHERE b.date = ${dayIso} ORDER BY b.time`);
 }
 
-export async function getBookingsBetween(db, dayFrom, dayTo, time) {
+export async function getBookingsBetween(db, dayFrom, dayTo, time, limit, offset) {
   return await db.all(sql`
     SELECT b.*, u.name AS user_name, CASE WHEN u.phone_verified = 1 THEN u.phone ELSE '' END AS user_phone
     FROM bookings b JOIN users u ON u.tg_id = b.tg_user_id
     WHERE b.date BETWEEN ${dayFrom} AND ${dayTo} AND (b.date > ${dayFrom} OR b.time > ${time})
-    ORDER BY b.date, b.time`);
+    ORDER BY b.date, b.time LIMIT ${limit} OFFSET ${offset}`);
+}
+
+export async function getAllBookings(db, limit, offset) {
+  return await db.all(sql`
+    SELECT b.*, u.name AS user_name, CASE WHEN u.phone_verified = 1 THEN u.phone ELSE '' END AS user_phone
+    FROM bookings b JOIN users u ON u.tg_id = b.tg_user_id
+    ORDER BY b.date DESC, b.time DESC LIMIT ${limit} OFFSET ${offset}`);
 }
 
 export async function getUnsentReminders(db, today, time, lastDay, now, limit) {

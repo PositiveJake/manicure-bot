@@ -1,5 +1,5 @@
 import { pad2 } from './config.js';
-import { WEEKDAYS_RU, fmtDmy, daysInMonth, weekdayIndex, monthTitle, currentYm, ymOfYmd, shiftYm } from './dates.js';
+import { WEEKDAYS_RU, fmtDmy, daysInMonth, weekdayIndex, monthTitle, currentYm, ymOfYmd } from './dates.js';
 
 // Все inline-клавиатуры. Префиксы callback-данных должны совпадать с роутером
 // в handlers/callback_query.js — там же они и разбираются.
@@ -28,6 +28,10 @@ export const CB = {
   ACL: 'acl',       // список клиентов: acl:<page>
   ACLU: 'aclu',     // карточка клиента: aclu:<uid>
   NEAREST: 'nearest',
+  FREE: 'freewindows',
+  NEXT_MONTH: 'nextmonth',
+  NEXT_DAY: 'nextday',
+  NEXT_SLOT: 'nextslot',
   BLOCKED: 'blocked',
 };
 
@@ -80,15 +84,9 @@ export function calendarKb(year, month, minYM, maxYM, navPrefix, dayCb, dayLabel
   return kb(rows);
 }
 
-export function clientCalendarKb(ym, minYM, maxYM, freeDays) {
+export function clientCalendarKb(ym, freeDays) {
   const weekdayNames = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
-  const prev = shiftYm(ym, -1);
-  const next = shiftYm(ym, 1);
-  const rows = [[
-    btn('◀️', prev >= minYM ? `${CB.CCAL}:${prev}` : CB.NOOP),
-    btn(monthTitle(ym), CB.NOOP),
-    btn('▶️', next <= maxYM ? `${CB.CCAL}:${next}` : CB.NOOP),
-  ]];
+  const rows = [[btn(monthTitle(ym), CB.NOOP)]];
   for (const day of freeDays) {
     rows.push([btn(`${weekdayNames[weekdayIndex(day)]}, ${fmtDmy(day).slice(0, 5)}`, `${CB.CDAY}:${day}`)]);
   }
@@ -107,7 +105,10 @@ export function adminCalendarKb(year, month, minYM, maxYM, counts) {
     dayLabel[d] = n ? `${dnum} ·${n}` : String(dnum);
   }
   const markup = calendarKb(year, month, minYM, maxYM, CB.ACAL, dayCb, dayLabel);
-  markup.inline_keyboard.push([btn('📨 Ближайшие записи', CB.NEAREST)]);
+  markup.inline_keyboard.push(
+    [btn('📨 Ближайшие записи', CB.NEAREST), btn('🟢 Свободные окна', CB.FREE)],
+    [btn('🗓 Окна на следующий месяц', CB.NEXT_MONTH)],
+  );
   markup.inline_keyboard.push([
     btn('👥 Клиенты', `${CB.ACL}:0`),
     btn('🚫 Заблокированные', CB.BLOCKED),
@@ -214,17 +215,50 @@ export function blockedKb(users) {
   return kb(rows);
 }
 
-export function nearestKb(bookings, page = 0, pages = 1) {
-  const rows = bookings.map((b) => [
-    btn(`❌ ${fmtDmy(b.date)} ${b.time} — ${(b.user_name || 'клиент').slice(0, 18)}`, `${CB.ABK}:${b.id}`),
+export function nearestKb(bookings, range, page, hasNext) {
+  const filters = [['7', 'На ближайшие 7 дней'], ['30', 'На ближайшие 30 дней'], ['all', 'Все записи']];
+  const rows = filters.map(([key, label]) => [
+    btn(key === range ? `✓ ${label}` : label, `${CB.NEAREST}:${key}:0`),
   ]);
-  if (pages > 1) {
+  rows.push(...bookings.map((b) => [
+    btn(`❌ ${fmtDmy(b.date)} ${b.time} — ${(b.user_name || 'клиент').slice(0, 18)}`, `${CB.ABK}:${b.id}`),
+  ]));
+  if (page > 0 || hasNext) {
     const nav = [];
-    if (page > 0) nav.push(btn('◀️', `${CB.NEAREST}:${page - 1}`));
-    nav.push(btn(`${page + 1}/${pages}`, CB.NOOP));
-    if (page + 1 < pages) nav.push(btn('▶️', `${CB.NEAREST}:${page + 1}`));
+    if (page > 0) nav.push(btn('◀️', `${CB.NEAREST}:${range}:${page - 1}`));
+    nav.push(btn(`Стр. ${page + 1}`, CB.NOOP));
+    if (hasNext) nav.push(btn('▶️', `${CB.NEAREST}:${range}:${page + 1}`));
     rows.push(nav);
   }
   rows.push([btn('⬅️ В панель', `${CB.ACAL}:${currentYm()}`), home()]);
   return kb(rows);
+}
+
+export function ownerPanelKb() {
+  return kb([[btn('⬅️ В панель', CB.ADMIN), home()]]);
+}
+
+export function nextMonthKb(days) {
+  const rows = days.map(({ date, slots }) => {
+    const open = slots.filter(({ status }) => status === 'open').length;
+    const label = `${WEEKDAYS_RU[weekdayIndex(date)]}, ${fmtDmy(date).slice(0, 5)} · свободно ${open}`;
+    return [btn(label, `${CB.NEXT_DAY}:${date}`)];
+  });
+  rows.push([btn('⬅️ В панель', CB.ADMIN), home()]);
+  return kb(rows);
+}
+
+export function nextDayKb(day) {
+  const rows = day.slots.map(({ time, status }) => {
+    if (status === 'booked') return [btn(`${time} · занято`, CB.NOOP)];
+    const isOpen = status === 'open';
+    return [btn(isOpen ? `${time} · закрыть` : `${time} · открыть`,
+      `${CB.NEXT_SLOT}:${day.date}|${time}|${isOpen ? 1 : 0}`)];
+  });
+  rows.push([btn('⬅️ К списку дней', CB.NEXT_MONTH), home()]);
+  return kb(rows);
+}
+
+export function monthNoticeKb(month) {
+  return kb([[btn('🗓 Настроить окна', `${CB.NEXT_MONTH}:${month}`)]]);
 }

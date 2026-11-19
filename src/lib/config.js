@@ -7,8 +7,10 @@ export const WORK_SLOTS = {
   6: ['10:30', '13:00', '15:30'],
 };
 export const APPOINTMENT_MINUTES = 45;
-export const BOOKING_MONTHS_AHEAD = 2;   // на сколько месяцев вперёд можно записываться
+export const ADMIN_MONTHS_AHEAD = 2;    // на сколько месяцев вперёд виден календарь владельца
 export const ADMIN_MONTHS_BACK = 2;      // глубина календаря владельца в прошлое
+export const MONTH_REVIEW_DAYS = 7;
+export const MONTH_REVIEW_TIME = '12:00';
 
 // Местное время салона: смещение от UTC в часах (Москва = 3, летнего времени нет)
 export const TZ_OFFSET_HOURS = 3;

@@ -3,6 +3,7 @@ import handleCallback from './handlers/callback_query.js';
 import { parseOwnerIds } from './lib/config.js';
 import { connectD1 } from './lib/d1.js';
 import { sweepReminders } from './lib/reminders.js';
+import { sendMonthNotices } from './lib/monthNotices.js';
 import { createTelegramApi } from './lib/telegram.js';
 
 function services(env) {
@@ -40,7 +41,11 @@ export default {
 
   async scheduled(_event, env) {
     const { api, db, ownerIds } = services(env);
-    const { sent, failed } = await sweepReminders(api, db, ownerIds);
-    if (failed) console.warn('Reminder deliveries will be retried', { sent, failed });
+    try {
+      const { sent, failed } = await sweepReminders(api, db, ownerIds);
+      if (failed) console.warn('Reminder deliveries will be retried', { sent, failed });
+    } finally {
+      await sendMonthNotices(api, db, ownerIds);
+    }
   },
 };

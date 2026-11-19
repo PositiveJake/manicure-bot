@@ -1,4 +1,5 @@
-import { currentYm, fmtDmyWd } from '../lib/dates.js';
+import { currentYm, fmtDmyWd, isValidYmd, shiftYm, ymOfYmd } from '../lib/dates.js';
+import { scheduledTimes } from '../lib/availability.js';
 import { answerCb, editMsg, notifyOwners, esc, sendMsg } from '../lib/ui.js';
 import { CB, backKb, bookingDoneKb, phoneBookingKb, phoneKb, REMOVE_PHONE_KEYBOARD } from '../lib/keyboards.js';
 import * as repo from '../lib/repo.js';
@@ -59,9 +60,9 @@ async function route(ctx, data) {
     return;
   }
 
-  if (data === CB.BOOK) {
+  if (data === CB.BOOK || data === CB.CCN || after(CB.CCAL) !== null) {
     await ctx.answerCb();
-    await views.renderClientCalendar(ctx, null, null, currentYm());
+    await views.renderClientCalendar(ctx);
     return;
   }
 
@@ -69,15 +70,6 @@ async function route(ctx, data) {
     await ctx.answerCb();
     await views.renderMyBookings(ctx, null, null);
     return;
-  }
-
-  {
-    const payload = after(CB.CCAL);
-    if (payload !== null) {
-      await ctx.answerCb();
-      await views.renderClientCalendar(ctx, null, null, parseIntOr(payload, currentYm()));
-      return;
-    }
   }
 
   {
@@ -103,7 +95,7 @@ async function route(ctx, data) {
       const [dayIso, slot] = payload.split('|');
       if (!views.isBookableSlot(dayIso, slot)) {
         await ctx.answerCb('Это время уже недоступно. Выберите другое.', true);
-        await views.renderClientCalendar(ctx, null, null, currentYm());
+        await views.renderClientCalendar(ctx);
         return;
       }
       if (!ctx.user?.phone_verified || !ctx.user.phone) {
@@ -134,12 +126,6 @@ async function route(ctx, data) {
       );
       return;
     }
-  }
-
-  if (data === CB.CCN) {
-    await ctx.answerCb();
-    await views.renderClientCalendar(ctx, null, null, currentYm());
-    return;
   }
 
   {
@@ -193,9 +179,66 @@ async function route(ctx, data) {
 
   if (data === CB.NEAREST || after(CB.NEAREST) !== null) {
     if (!own) return denyOwner(ctx);
+    const [key, pageArg] = (after(CB.NEAREST) ?? '').split(':');
+    const hasFilter = pageArg !== undefined && ['7', '30', 'all'].includes(key);
+    const range = hasFilter ? key : '30';
+    const page = Math.max(0, parseIntOr(hasFilter ? pageArg : key, 0));
     await ctx.answerCb();
-    await views.renderNearest(ctx, parseIntOr(after(CB.NEAREST), 0));
+    await views.renderNearest(ctx, range, page);
     return;
+  }
+
+  if (data === CB.FREE) {
+    if (!own) return denyOwner(ctx);
+    await ctx.answerCb();
+    await views.renderFreeWindows(ctx);
+    return;
+  }
+
+  if (data === CB.NEXT_MONTH || after(CB.NEXT_MONTH) !== null) {
+    if (!own) return denyOwner(ctx);
+    const month = shiftYm(currentYm(), 1);
+    const target = after(CB.NEXT_MONTH);
+    if (target !== null && target !== String(month)) {
+      await ctx.answerCb('Срок настройки этого месяца закончился.', true);
+      return;
+    }
+    await ctx.answerCb();
+    await views.renderNextMonth(ctx, month);
+    return;
+  }
+
+  {
+    const day = after(CB.NEXT_DAY);
+    if (day !== null) {
+      if (!own) return denyOwner(ctx);
+      await ctx.answerCb();
+      await views.renderNextDay(ctx, day, shiftYm(currentYm(), 1));
+      return;
+    }
+  }
+
+  {
+    const payload = after(CB.NEXT_SLOT);
+    if (payload !== null) {
+      if (!own) return denyOwner(ctx);
+      const [day, time, state] = payload.split('|');
+      const month = shiftYm(currentYm(), 1);
+      if (!isValidYmd(day) || ymOfYmd(day) !== month || !scheduledTimes(day).includes(time)
+        || (state !== '0' && state !== '1')) {
+        await ctx.answerCb('Это окно уже нельзя изменить здесь.', true);
+        return;
+      }
+      if (state === '1') {
+        const closed = await repo.closeSlot(db, day, time);
+        await ctx.answerCb(closed ? 'Окно закрыто.' : 'Окно уже закрыто или занято.');
+      } else {
+        await repo.reopenSlot(db, day, time);
+        await ctx.answerCb('Окно открыто.');
+      }
+      await views.renderNextDay(ctx, day, month);
+      return;
+    }
   }
 
   {
@@ -322,7 +365,7 @@ async function denyOwner(ctx) {
 
 function parseIntOr(s, fallback) {
   const n = parseInt(s, 10);
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isSafeInteger(n) ? n : fallback;
 }
 
 function fmtDate(dayIso) {

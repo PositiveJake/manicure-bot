@@ -1,55 +1,22 @@
-import { BOOKING_MONTHS_AHEAD, ADMIN_MONTHS_BACK, WORK_SLOTS, APPOINTMENT_MINUTES } from './config.js';
+import { ADMIN_MONTHS_AHEAD, ADMIN_MONTHS_BACK } from './config.js';
 import {
   todayIso, nowHm, currentYm, clampYm, ymOfYmd,
-  daysInMonth, fmtDmyWd, shiftYmd, shiftYm, isValidYmd, weekdayIndex, nowLocal, ymd, hm,
+  fmtDmyWd, shiftYmd, shiftYm, isValidYmd, nowLocal, ymd, hm, monthBounds, monthTitle,
 } from './dates.js';
+import { availableDays, freeSlots, readSchedule } from './availability.js';
 import * as repo from './repo.js';
 import { esc } from './ui.js';
 import {
   mainMenuKb, clientCalendarKb, adminCalendarKb, slotsKb, confirmKb,
   myBookingsKb, cancelConfirmKb, adminDayKb, bookingDetailKb,
   adminCancelConfirmKb, clientsKb, clientDetailKb, blockedKb, nearestKb,
+  ownerPanelKb, nextMonthKb, nextDayKb,
 } from './keyboards.js';
+
+export { freeSlots, isBookableSlot } from './availability.js';
 
 const CLIENTS_PER_PAGE = 8;
 const BOOKINGS_PER_PAGE = 8;
-
-function isBookableDay(dayIso, today) {
-  return isValidYmd(dayIso) && dayIso >= today
-    && ymOfYmd(dayIso) <= shiftYm(ymOfYmd(today), BOOKING_MONTHS_AHEAD);
-}
-
-function workSlots(dayIso, today, time) {
-  const slots = WORK_SLOTS[weekdayIndex(dayIso)] ?? [];
-  return dayIso === today ? slots.filter((slot) => slot > time) : slots;
-}
-
-function minutes(time) {
-  const [hours, minute] = time.split(':').map(Number);
-  return hours * 60 + minute;
-}
-
-function hasRoom(slot, bookings) {
-  const start = minutes(slot);
-  return bookings.every((time) => Math.abs(minutes(time) - start) >= APPOINTMENT_MINUTES);
-}
-
-export function isBookableSlot(dayIso, slot) {
-  const now = nowLocal();
-  const today = ymd(now);
-  return isBookableDay(dayIso, today) && workSlots(dayIso, today, hm(now)).includes(slot);
-}
-
-export async function freeSlots(db, dayIso) {
-  const now = nowLocal();
-  const today = ymd(now);
-  if (!isBookableDay(dayIso, today)) return [];
-  const slots = workSlots(dayIso, today, hm(now));
-  if (!slots.length) return [];
-  const rows = await repo.getBookedTimesBetween(db, dayIso, dayIso);
-  const busy = rows.map((r) => r.time);
-  return slots.filter((slot) => hasRoom(slot, busy));
-}
 
 // ---------- клиент ----------
 
@@ -57,37 +24,12 @@ export async function renderMainMenu(ctx) {
   await ctx.editMsg('💅 <b>Запись на маникюр</b>\n\nВыберите действие:', mainMenuKb(ctx.isOwner));
 }
 
-export async function renderClientCalendar(ctx, chatId, messageId, ym) {
-  const { db } = ctx;
-  const minYM = currentYm();
-  const maxYM = shiftYm(minYM, BOOKING_MONTHS_AHEAD);
-  ym = clampYm(ym, minYM, maxYM);
-  const year = Math.floor(ym / 100);
-  const month = ym % 100;
-  const first = `${year}-${String(month).padStart(2, '0')}-01`;
-  const last = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth(year, month)).padStart(2, '0')}`;
-
-  const booked = await repo.getBookedTimesBetween(db, first, last);
-  const busy = new Map();
-  for (const r of booked) {
-    if (!busy.has(r.date)) busy.set(r.date, []);
-    busy.get(r.date).push(r.time);
-  }
-
+export async function renderClientCalendar(ctx) {
   const now = nowLocal();
-  const today = ymd(now);
-  const nowStr = hm(now);
-  const freeDays = [];
-  for (let dnum = 1; dnum <= daysInMonth(year, month); dnum++) {
-    const d = `${year}-${String(month).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
-    if (d < today) continue;
-    const taken = busy.get(d) ?? [];
-    if (workSlots(d, today, nowStr).some((slot) => hasRoom(slot, taken))) freeDays.push(d);
-  }
-
-  const markup = clientCalendarKb(ym, minYM, maxYM, freeDays);
-  const text = freeDays.length ? '📅 Выберите рабочий день.' : '📅 На этот месяц свободных дней нет.';
-  await ctx.editMsg(text, markup);
+  const month = ymOfYmd(ymd(now));
+  const days = await availableDays(ctx.db, now, monthBounds(month).last);
+  const text = days.length ? '📅 Выберите рабочий день.' : '📅 На этот месяц свободных дней нет.';
+  await ctx.editMsg(text, clientCalendarKb(month, days.map(({ date }) => date)));
 }
 
 export async function renderSlots(ctx, chatId, messageId, dayIso, alertViaAnswer) {
@@ -95,7 +37,7 @@ export async function renderSlots(ctx, chatId, messageId, dayIso, alertViaAnswer
   const slots = await freeSlots(db, dayIso);
   if (!slots.length) {
     if (alertViaAnswer) await ctx.answerCb('На этот день свободных слотов уже нет', true);
-    await renderClientCalendar(ctx, chatId, messageId, isValidYmd(dayIso) ? ymOfYmd(dayIso) : currentYm());
+    await renderClientCalendar(ctx);
     return;
   }
   if (alertViaAnswer) await ctx.answerCb();
@@ -164,12 +106,11 @@ export async function renderAdminCalendar(ctx, chatId, messageId, ym) {
   const { db } = ctx;
   const todayYM = currentYm();
   const minYM = shiftYm(todayYM, -ADMIN_MONTHS_BACK);
-  const maxYM = shiftYm(todayYM, BOOKING_MONTHS_AHEAD);
+  const maxYM = shiftYm(todayYM, ADMIN_MONTHS_AHEAD);
   ym = clampYm(ym, minYM, maxYM);
   const year = Math.floor(ym / 100);
   const month = ym % 100;
-  const first = `${year}-${String(month).padStart(2, '0')}-01`;
-  const last = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth(year, month)).padStart(2, '0')}`;
+  const { first, last } = monthBounds(ym);
 
   const countRows = await repo.getDayCounts(db, first, last);
   const counts = {};
@@ -310,21 +251,48 @@ export async function renderBlockedList(ctx, chatId, messageId) {
   await ctx.editMsg('🚫 <b>Заблокированные клиенты</b>\n\nНажмите, чтобы разблокировать:', blockedKb(users));
 }
 
-export async function renderNearest(ctx, page = 0) {
+export async function renderNearest(ctx, range = '30', page = 0) {
   const { db } = ctx;
   const now = nowLocal();
   const today = ymd(now);
-  const bookings = await repo.getBookingsBetween(db, today, shiftYmd(today, 29), hm(now));
-  if (!bookings.length) {
-    await ctx.editMsg('📨 На ближайшие 30 дней записей нет.', nearestKb([]));
-    return;
+  const limit = BOOKINGS_PER_PAGE + 1;
+  const load = (offset) => range === 'all' ? repo.getAllBookings(db, limit, offset)
+    : repo.getBookingsBetween(db, today, shiftYmd(today, Number(range) - 1), hm(now), limit, offset);
+  let bookings = await load(page * BOOKINGS_PER_PAGE);
+  if (!bookings.length && page > 0) {
+    page = 0;
+    bookings = await load(0);
   }
-  const pages = Math.ceil(bookings.length / BOOKINGS_PER_PAGE);
-  page = Math.max(0, Math.min(page, pages - 1));
-  const visible = bookings.slice(page * BOOKINGS_PER_PAGE, (page + 1) * BOOKINGS_PER_PAGE);
+  const visible = bookings.slice(0, BOOKINGS_PER_PAGE);
   const lines = visible.map((b) => {
     const phone = b.user_phone ? `, ${esc(b.user_phone)}` : '';
     return `• ${fmtDmyWd(b.date)} — <b>${b.time}</b> — ${esc(b.user_name || 'клиент')}${phone}`;
   });
-  await ctx.editMsg('📨 <b>Записи на ближайшие 30 дней</b>\n\n' + lines.join('\n'), nearestKb(visible, page, pages));
+  const title = range === 'all' ? 'Все записи' : `Записи на ближайшие ${range} дней`;
+  await ctx.editMsg(`📨 <b>${title}</b>\n\n${lines.join('\n') || 'Записей нет.'}`,
+    nearestKb(visible, range, page, bookings.length > BOOKINGS_PER_PAGE));
+}
+
+export async function renderFreeWindows(ctx) {
+  const now = nowLocal();
+  const month = ymOfYmd(ymd(now));
+  const days = await availableDays(ctx.db, now, monthBounds(month).last);
+  const lines = days.map(({ date, times }) => `• ${fmtDmyWd(date)} — <b>${times.join(', ')}</b>`);
+  await ctx.editMsg(`🟢 <b>Свободные окна до конца месяца</b>\n\n${lines.join('\n') || 'Свободных окон нет.'}`, ownerPanelKb());
+}
+
+export async function renderNextMonth(ctx, month) {
+  const { first, last } = monthBounds(month);
+  const days = await readSchedule(ctx.db, first, last);
+  await ctx.editMsg(`🗓 <b>Окна на следующий месяц · ${monthTitle(month)}</b>\n\n` +
+    `Открытые окна станут доступны клиентам с ${fmtDmyWd(first)} по московскому времени. Выберите день для настройки.`, nextMonthKb(days));
+}
+
+export async function renderNextDay(ctx, day, month) {
+  const [schedule] = isValidYmd(day) && ymOfYmd(day) === month ? await readSchedule(ctx.db, day, day) : [];
+  if (!schedule) {
+    await renderNextMonth(ctx, month);
+    return;
+  }
+  await ctx.editMsg(`🗓 <b>${fmtDmyWd(day)}</b>\n\nВыберите окно, чтобы закрыть или открыть его для записи.`, nextDayKb(schedule));
 }

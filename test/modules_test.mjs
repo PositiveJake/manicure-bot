@@ -19,7 +19,8 @@ const ok = (name, cond) => {
 for (const name of [
   'getUser', 'upsertUser', 'requestPhone', 'cancelPhoneRequest', 'verifyPhone', 'setBlocked',
   'createBooking', 'getBooking', 'deleteBooking', 'getUserBookings',
-  'getBookedTimesBetween', 'getDayCounts', 'getBookingsForDay',
+  'getSlotOccupancy', 'closeSlot', 'reopenSlot', 'claimMonthNotice', 'markMonthNoticeSent',
+  'getDayCounts', 'getBookingsForDay', 'getAllBookings',
   'getBookingsBetween', 'getUnsentReminders', 'claimReminder', 'saveReminderProgress',
   'listUsersPage', 'countUsers', 'listBlocked', 'allBookingsForExport',
 ]) {
@@ -35,6 +36,7 @@ for (const name of [
   'renderMyBookings', 'renderCancelAsk', 'renderCancelDo', 'renderAdminCalendar',
   'renderDay', 'renderBookingDetail', 'renderAdminCancelAsk', 'renderAdminCancelDo',
   'renderClientsList', 'renderClientDetail', 'renderBlockedList', 'renderNearest',
+  'renderFreeWindows', 'renderNextMonth', 'renderNextDay',
 ]) {
   ok(`views.${name}`, typeof views[name] === 'function');
 }

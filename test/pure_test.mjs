@@ -9,6 +9,7 @@ import {
   mainMenuKb, clientCalendarKb, adminCalendarKb, slotsKb, confirmKb,
   myBookingsKb, cancelConfirmKb, adminDayKb, bookingDetailKb,
   adminCancelConfirmKb, clientsKb, clientDetailKb, blockedKb, nearestKb, phoneKb, phoneBookingKb, bookingDoneKb,
+  monthNoticeKb, nextMonthKb, nextDayKb,
 } from '../src/lib/keyboards.js';
 import { isReminderDue, whenWord, clientText } from '../src/lib/reminderLogic.js';
 
@@ -46,11 +47,10 @@ ok('pad2', pad2(5) === '05' && pad2(45) === '45');
 
 {
   const free = ['2026-10-14', '2026-10-16'];
-  const kb = clientCalendarKb(202610, 202610, 202612, free);
+  const kb = clientCalendarKb(202610, free);
   const all = flat(kb);
   ok('заголовок месяца', all.some((b) => b.text === 'Октябрь 2026'));
-  ok('назад в прошлом месяце недоступна', all.every((b) => b.text !== '◀️' || b.callback_data === 'noop'));
-  ok('вперёд доступна', all.some((b) => b.callback_data === 'ccal:202611'));
+  ok('клиенту доступен только текущий месяц', all.every((b) => !b.callback_data.startsWith('ccal:')));
   const cday = all.filter((b) => b.callback_data?.startsWith('cday:'));
   ok('доступные дни показываются с названием дня недели',
     cday.length === 2 && cday.some((b) => b.callback_data === 'cday:2026-10-14' && b.text === 'Среда, 14.10')
@@ -116,17 +116,18 @@ ok('список клиентов', (() => {
 ok('карточка клиента', flat(clientDetailKb(42, false)).some((b) => b.callback_data === 'blk:42:cd:42'));
 ok('список заблокированных', flat(blockedKb([{ tg_id: 42, name: 'Анна' }]))
   .some((b) => b.callback_data === 'blk:42:bl'));
-ok('ближайшие записи', flat(nearestKb([{ id: 3, date: '2026-10-12', time: '12:00', user_name: 'Боб' }]))
+ok('ближайшие записи', flat(nearestKb([{ id: 3, date: '2026-10-12', time: '12:00', user_name: 'Боб' }], '30', 0, false))
   .some((b) => b.callback_data === 'abk:3'));
 ok('клавиатура Telegram запрашивает контакт', phoneKb().keyboard.flat().some((b) => b.request_contact));
 
 // ---------- согласованность callback-данных с роутером ----------
 
 {
-  const known = /^(noop|menu:(main|book|mine|phone|admin)|phone:cancel|ccal:\d{6}|cday:\d{4}-\d{2}-\d{2}|cslot:[\d-]+\|[\d:]+|ccf:[\d-]+\|[\d:]+|ccn|cancelq:\d+|cancel2:\d+|acal:\d{6}|aday:\d{4}-\d{2}-\d{2}|abk:\d+|aupd:\d+|aup2:\d+|blk:\d+:[a-z:0-9]+|acl:\d+|aclu:\d+|nearest(?::\d+)?|blocked)$/;
+  const known = /^(noop|menu:(main|book|mine|phone|admin)|phone:cancel|ccal:\d{6}|cday:\d{4}-\d{2}-\d{2}|cslot:[\d-]+\|[\d:]+|ccf:[\d-]+\|[\d:]+|ccn|cancelq:\d+|cancel2:\d+|acal:\d{6}|aday:\d{4}-\d{2}-\d{2}|abk:\d+|aupd:\d+|aup2:\d+|blk:\d+:[a-z:0-9]+|acl:\d+|aclu:\d+|nearest(?::(7|30|all):\d+)?|blocked|freewindows|nextmonth(?::\d{6})?|nextday:[\d-]+|nextslot:[\d-]+\|[\d:]+\|[01])$/;
+  const nextDay = { date: '2026-11-04', slots: [{time: '12:00', status: 'open'}, {time: '14:30', status: 'closed'}] };
   const kbs = [
     mainMenuKb(true), mainMenuKb(false), bookingDoneKb(), phoneBookingKb('2026-10-14'),
-    clientCalendarKb(202610, 202610, 202612, ['2026-10-14']),
+    clientCalendarKb(202610, ['2026-10-14']),
     adminCalendarKb(2026, 10, 202608, 202612, {}),
     slotsKb('2026-10-12', ['10:00', '10:45', '11:30', '12:15']),
     confirmKb('2026-10-12', '10:00'),
@@ -138,7 +139,8 @@ ok('клавиатура Telegram запрашивает контакт', phoneK
     clientsKb([{ tg_id: 42, name: null, active_bookings: 0 }], 0, 1, new Set()),
     clientDetailKb(42, true),
     blockedKb([{ tg_id: 42, name: 'A' }]),
-    nearestKb([{ id: 3, date: '2026-10-12', time: '10:00', user_name: 'B' }], 1, 3),
+    nearestKb([{ id: 3, date: '2026-10-12', time: '10:00', user_name: 'B' }], 'all', 1, true),
+    monthNoticeKb(202611), nextMonthKb([nextDay]), nextDayKb(nextDay),
   ];
   for (const kb of kbs) {
     for (const b of flat(kb)) {
