@@ -49,13 +49,23 @@ async function waitForWebhook(url, secret) {
   throw new Error('The deployed Worker did not accept the webhook probe. Check its workers.dev route.');
 }
 
+async function verifyBot(telegram) {
+  try {
+    return await telegram.getMe();
+  } catch (error) {
+    if (error.code !== 0) throw error;
+    await setTimeout(2000);
+    return await telegram.getMe();
+  }
+}
+
 async function deploy() {
   if (!/^\d+:[\w-]+$/.test(TELEGRAM_BOT_TOKEN ?? '')) {
     throw new Error('Set the BotFather token in the TELEGRAM_BOT_TOKEN GitHub Actions secret.');
   }
   const ownerIds = parseOwnerIds(TELEGRAM_OWNER_IDS);
   const telegram = createTelegramApi(TELEGRAM_BOT_TOKEN);
-  const bot = await telegram.getMe();
+  const bot = await verifyBot(telegram);
   console.log('Telegram bot token verified.');
   if (!/^[a-f0-9]{32}$/i.test(CLOUDFLARE_ACCOUNT_ID ?? '') || !CLOUDFLARE_API_TOKEN) {
     throw new Error('Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in GitHub Actions.');
