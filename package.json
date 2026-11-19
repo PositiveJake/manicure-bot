@@ -1,0 +1,12 @@
+{
+  "name": "manicure-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/pure_test.mjs && node test/modules_test.mjs && node --test test/worker.test.mjs",
+    "dev": "wrangler dev --test-scheduled"
+  },
+  "devDependencies": {
+    "wrangler": "4.165.0"
+  }
+}

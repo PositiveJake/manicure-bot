@@ -1,0 +1,12 @@
+.tgcloud/
+node_modules/
+.wrangler/
+.wrangler-*.json
+.dev.vars*
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.csv
