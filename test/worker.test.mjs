@@ -6,15 +6,20 @@ import worker from '../src/worker.js';
 import { connectD1 } from '../src/lib/d1.js';
 import { shiftYm, shiftYmd, todayIso } from '../src/lib/dates.js';
 import { sweepReminders } from '../src/lib/reminders.js';
+import { freeSlots, renderNearest } from '../src/lib/views.js';
+import { createBooking } from '../src/lib/repo.js';
 
 const schema = readFileSync(new URL('../migrations/0001_bookings.sql', import.meta.url), 'utf8');
+const phoneMigration = readFileSync(new URL('../migrations/0002_verified_phone.sql', import.meta.url), 'utf8');
 const client = 101;
 const owner = 201;
 
-function createDatabase(t) {
+function createDatabase(t, seed = '') {
   const sqlite = new DatabaseSync(':memory:');
   t.after(() => sqlite.close());
   sqlite.exec(schema);
+  sqlite.exec(seed);
+  sqlite.exec(phoneMigration);
   return {
     sqlite,
     binding: {
@@ -75,7 +80,8 @@ test('owner and client are retried independently, with a single claim per bookin
 });
 
 test('Telegram webhook covers booking, blocked buttons, owner cancellation and private chats', async (t) => {
-  const { sqlite, binding } = createDatabase(t);
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-19T06:00:00Z') });
+  const { sqlite, binding } = createDatabase(t, "INSERT INTO users (tg_id, phone) VALUES (101, '+70000000000')");
   const token = 'fake-token';
   const secret = 'fake-webhook-secret';
   const env = {
@@ -111,11 +117,54 @@ test('Telegram webhook covers booking, blocked buttons, owner cancellation and p
   assert.equal((await request(message(client, '/start booking'))).status, 204);
   assert.ok(sqlite.prepare('SELECT 1 FROM users WHERE tg_id = ?').get(client));
 
-  const tomorrow = shiftYmd(todayIso(), 1);
+  const friday = shiftYmd(todayIso(), 1);
+  const sunday = shiftYmd(todayIso(), 3);
+  const wednesday = shiftYmd(todayIso(), 6);
+  const callbackKeys = () => calls.at(-1).body.reply_markup.inline_keyboard.flat();
+  const contact = (id, userId, extra = {}) => ({
+    message: { from: from(id), chat: chat(id), contact: { user_id: userId, phone_number: '79991234567' }, ...extra },
+  });
   const count = () => sqlite.prepare('SELECT COUNT(*) AS n FROM bookings').get().n;
-  await request(button(client, `ccf:${tomorrow}|10:00`));
-  await request(button(client, `ccf:${tomorrow}|10:00`));
-  await request(button(client, `ccf:${shiftYmd(tomorrow, -2)}|10:00`));
+  const phoneState = () => sqlite.prepare('SELECT phone_verified, pending_phone_slot FROM users WHERE tg_id = ?').get(client);
+  await request(button(client, 'menu:book'));
+  assert.deepEqual(callbackKeys().filter((b) => b.callback_data.startsWith('cday:')).slice(0, 3).map((b) => b.text),
+    ['Пятница, 20.11', 'Воскресенье, 22.11', 'Среда, 25.11']);
+  assert.ok(callbackKeys().some((b) => b.callback_data === 'menu:main'));
+  for (const [day, times] of [
+    [friday, ['12:00', '14:30', '17:00']],
+    [sunday, ['10:30', '13:00', '15:30']],
+    [wednesday, ['12:00', '14:30', '17:00']],
+  ]) {
+    await request(button(client, `cday:${day}`));
+    assert.deepEqual(callbackKeys().filter((b) => b.callback_data.startsWith('cslot:')).map((b) => b.text), times);
+  }
+
+  await request(button(client, `ccf:${friday}|12:00`)); // an existing confirmation button still requires verification
+  assert.equal(count(), 0);
+  assert.equal(phoneState().phone_verified, 0);
+  assert.equal(calls.at(-1).body.reply_markup.keyboard[0][0].request_contact, true);
+  await request(message(client, '+79998765432'));
+  await request(contact(client, owner));
+  await request(contact(client, client, { forward_origin: { type: 'user' } }));
+  assert.equal(phoneState().phone_verified, 0);
+
+  await request(button(client, `cday:${friday}`));
+  assert.equal(phoneState().pending_phone_slot, null);
+  assert.ok(calls.some(({ body }) => body.reply_markup?.remove_keyboard));
+  await request(contact(client, client));
+  assert.equal(phoneState().phone_verified, 0);
+
+  await request(button(client, `cslot:${friday}|12:00`));
+  await request(contact(client, client));
+  assert.equal(phoneState().phone_verified, 1);
+  assert.equal(count(), 0);
+  assert.ok(callbackKeys().some((b) => b.callback_data === `ccf:${friday}|12:00`));
+  await request(button(client, `ccf:${friday}|12:00`));
+  assert.ok(callbackKeys().some((b) => b.callback_data === 'menu:main'));
+  assert.ok(calls.some(({ body }) => body.chat_id === owner && /\+79991234567/.test(body.text)));
+  await request(button(client, `ccf:${friday}|12:00`));
+  await request(button(client, `ccf:${sunday}|12:00`));
+  await request(button(client, `ccf:${shiftYmd(sunday, -1)}|12:00`));
   assert.equal(count(), 1);
 
   await request(button(client, 'aup2:1'));
@@ -127,9 +176,36 @@ test('Telegram webhook covers booking, blocked buttons, owner cancellation and p
 
   await request(button(owner, `blk:${client}:cl`));
   assert.equal(sqlite.prepare('SELECT is_blocked FROM users WHERE tg_id = ?').get(client).is_blocked, 1);
-  await request(button(client, `ccf:${tomorrow}|11:30`));
+  await request(button(client, `ccf:${friday}|14:30`));
   assert.equal(count(), 0);
   assert.match(calls.at(-1).body.text, /заблокированы/);
+});
+
+test('owner can page through the next 30 days, including the last day', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-19T09:00:00Z') });
+  const { sqlite, binding } = createDatabase(t, 'INSERT INTO users (tg_id) VALUES (101)');
+  const today = todayIso();
+  const insert = sqlite.prepare('INSERT INTO bookings (tg_user_id, date, time) VALUES (101, ?, ?)');
+  insert.run(today, '10:00');
+  for (const offset of [1, 2, 3, 4, 5, 6, 8, 20, 29, 30]) insert.run(shiftYmd(today, offset), '17:00');
+  const screens = [];
+  const ctx = { db: connectD1(binding), editMsg: (text, markup) => screens.push({ text, markup }) };
+  await renderNearest(ctx);
+  await renderNearest(ctx, 1);
+  assert.ok(screens[0].markup.inline_keyboard.flat().some((b) => b.callback_data === 'nearest:1'));
+  assert.doesNotMatch(screens[0].text, /19\.11\.2026/);
+  assert.match(screens[1].text, /18\.12\.2026/);
+  assert.doesNotMatch(screens[1].text, /19\.12\.2026/);
+});
+
+test('new slots do not overlap a booking made with the old schedule', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-19T06:00:00Z') });
+  const { sqlite, binding } = createDatabase(t, "INSERT INTO users (tg_id, phone) VALUES (101, '+79991234567')");
+  const db = connectD1(binding);
+  sqlite.exec("UPDATE users SET phone_verified = 1; INSERT INTO bookings (tg_user_id, date, time) VALUES (101, '2026-11-20', '11:30')");
+  assert.deepEqual(await freeSlots(db, '2026-11-20'), ['14:30', '17:00']);
+  assert.equal(await createBooking(db, client, '2026-11-20', '12:00'), false);
+  assert.equal(await createBooking(db, client, '2026-11-20', '14:30'), true);
 });
 
 test('calendar navigation crosses the year boundary', () => {

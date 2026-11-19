@@ -1,7 +1,7 @@
-import { BOOKING_MONTHS_AHEAD, ADMIN_MONTHS_BACK, TIME_SLOTS } from './config.js';
+import { BOOKING_MONTHS_AHEAD, ADMIN_MONTHS_BACK, WORK_SLOTS, APPOINTMENT_MINUTES } from './config.js';
 import {
   todayIso, nowHm, currentYm, clampYm, ymOfYmd,
-  daysInMonth, fmtDmyWd, shiftYmd, shiftYm, isValidYmd,
+  daysInMonth, fmtDmyWd, shiftYmd, shiftYm, isValidYmd, weekdayIndex, nowLocal, ymd, hm,
 } from './dates.js';
 import * as repo from './repo.js';
 import { esc } from './ui.js';
@@ -12,29 +12,43 @@ import {
 } from './keyboards.js';
 
 const CLIENTS_PER_PAGE = 8;
+const BOOKINGS_PER_PAGE = 8;
 
 function isBookableDay(dayIso, today) {
   return isValidYmd(dayIso) && dayIso >= today
     && ymOfYmd(dayIso) <= shiftYm(ymOfYmd(today), BOOKING_MONTHS_AHEAD);
 }
 
+function workSlots(dayIso, today, time) {
+  const slots = WORK_SLOTS[weekdayIndex(dayIso)] ?? [];
+  return dayIso === today ? slots.filter((slot) => slot > time) : slots;
+}
+
+function minutes(time) {
+  const [hours, minute] = time.split(':').map(Number);
+  return hours * 60 + minute;
+}
+
+function hasRoom(slot, bookings) {
+  const start = minutes(slot);
+  return bookings.every((time) => Math.abs(minutes(time) - start) >= APPOINTMENT_MINUTES);
+}
+
 export function isBookableSlot(dayIso, slot) {
-  const today = todayIso();
-  return isBookableDay(dayIso, today) && TIME_SLOTS.includes(slot)
-    && (dayIso > today || slot > nowHm());
+  const now = nowLocal();
+  const today = ymd(now);
+  return isBookableDay(dayIso, today) && workSlots(dayIso, today, hm(now)).includes(slot);
 }
 
 export async function freeSlots(db, dayIso) {
-  const today = todayIso();
+  const now = nowLocal();
+  const today = ymd(now);
   if (!isBookableDay(dayIso, today)) return [];
+  const slots = workSlots(dayIso, today, hm(now));
+  if (!slots.length) return [];
   const rows = await repo.getBookedTimesBetween(db, dayIso, dayIso);
-  const busy = new Set(rows.map((r) => r.time));
-  let slots = TIME_SLOTS.filter((s) => !busy.has(s));
-  if (dayIso === today) {
-    const nowStr = nowHm();
-    slots = slots.filter((s) => s > nowStr);
-  }
-  return slots;
+  const busy = rows.map((r) => r.time);
+  return slots.filter((slot) => hasRoom(slot, busy));
 }
 
 // ---------- клиент ----------
@@ -56,24 +70,24 @@ export async function renderClientCalendar(ctx, chatId, messageId, ym) {
   const booked = await repo.getBookedTimesBetween(db, first, last);
   const busy = new Map();
   for (const r of booked) {
-    if (!busy.has(r.date)) busy.set(r.date, new Set());
-    busy.get(r.date).add(r.time);
+    if (!busy.has(r.date)) busy.set(r.date, []);
+    busy.get(r.date).push(r.time);
   }
 
-  const today = todayIso();
-  const nowStr = nowHm();
-  const freeDays = new Set();
+  const now = nowLocal();
+  const today = ymd(now);
+  const nowStr = hm(now);
+  const freeDays = [];
   for (let dnum = 1; dnum <= daysInMonth(year, month); dnum++) {
     const d = `${year}-${String(month).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
     if (d < today) continue;
-    const taken = busy.get(d) || new Set();
-    const free = TIME_SLOTS.filter((s) => !taken.has(s) && (d !== today || s > nowStr));
-    if (free.length) freeDays.add(d);
+    const taken = busy.get(d) ?? [];
+    if (workSlots(d, today, nowStr).some((slot) => hasRoom(slot, taken))) freeDays.push(d);
   }
 
-  const markup = clientCalendarKb(year, month, minYM, maxYM, freeDays, today);
-  const note = freeDays.size ? '' : '\n\n😔 В этом месяце свободных дней нет — листайте вперёд.';
-  await ctx.editMsg(`📅 Выберите день:${note}`, markup);
+  const markup = clientCalendarKb(ym, minYM, maxYM, freeDays);
+  const text = freeDays.length ? '📅 Выберите рабочий день.' : '📅 На этот месяц свободных дней нет.';
+  await ctx.editMsg(text, markup);
 }
 
 export async function renderSlots(ctx, chatId, messageId, dayIso, alertViaAnswer) {
@@ -84,20 +98,17 @@ export async function renderSlots(ctx, chatId, messageId, dayIso, alertViaAnswer
     await renderClientCalendar(ctx, chatId, messageId, isValidYmd(dayIso) ? ymOfYmd(dayIso) : currentYm());
     return;
   }
+  if (alertViaAnswer) await ctx.answerCb();
   await ctx.editMsg(`🕒 Свободное время на <b>${fmtDmyWd(dayIso)}</b>:`, slotsKb(dayIso, slots));
 }
 
-export async function renderConfirm(ctx, chatId, messageId, dayIso, slot) {
-  const { db } = ctx;
-  const user = await repo.getUser(db, ctx.userId);
-  const name = (user && user.name) || ctx.fromName;
-  const phone = user ? user.phone : '';
+export async function renderConfirm(ctx, dayIso, slot, user) {
+  const name = user.name || ctx.fromName || 'клиент';
   const text =
     '🧾 <b>Проверьте запись:</b>\n\n' +
     `📅 ${fmtDmyWd(dayIso)}\n` +
     `🕒 ${slot}\n` +
-    `👤 ${esc(name)}` +
-    (phone ? `\n📞 ${esc(phone)}` : '\n📞 телефон не указан (можно добавить через «📞 Мой телефон»)') +
+    `👤 ${esc(name)}\n📞 ${esc(user.phone)}` +
     '\n\nВсё верно?';
   await ctx.editMsg(text, confirmKb(dayIso, slot));
 }
@@ -278,7 +289,7 @@ export async function renderClientDetail(ctx, chatId, messageId, uid) {
     '👤 <b>Карточка клиента</b>\n\n' +
     `Имя: ${esc(u.name || 'имя не указано')}\n` +
     `Telegram: ${esc(u.username ? `@${u.username}` : '—')}\n` +
-    `Телефон: ${esc(u.phone || '—')}\n` +
+    `Телефон: ${u.phone_verified ? esc(u.phone) : 'номер не подтверждён'}\n` +
     `Статус: ${status}\n` +
     `🆔 ${uid}`;
   if (bookings.length) {
@@ -299,17 +310,21 @@ export async function renderBlockedList(ctx, chatId, messageId) {
   await ctx.editMsg('🚫 <b>Заблокированные клиенты</b>\n\nНажмите, чтобы разблокировать:', blockedKb(users));
 }
 
-export async function renderNearest(ctx, chatId, messageId) {
+export async function renderNearest(ctx, page = 0) {
   const { db } = ctx;
-  const today = todayIso();
-  const bookings = await repo.getBookingsBetween(db, today, shiftYmd(today, 6));
+  const now = nowLocal();
+  const today = ymd(now);
+  const bookings = await repo.getBookingsBetween(db, today, shiftYmd(today, 29), hm(now));
   if (!bookings.length) {
-    await ctx.editMsg('📨 На ближайшие 7 дней записей нет.', nearestKb([]));
+    await ctx.editMsg('📨 На ближайшие 30 дней записей нет.', nearestKb([]));
     return;
   }
-  const lines = bookings.map((b) => {
-    const phone = b.user_phone ? `, ${b.user_phone}` : '';
+  const pages = Math.ceil(bookings.length / BOOKINGS_PER_PAGE);
+  page = Math.max(0, Math.min(page, pages - 1));
+  const visible = bookings.slice(page * BOOKINGS_PER_PAGE, (page + 1) * BOOKINGS_PER_PAGE);
+  const lines = visible.map((b) => {
+    const phone = b.user_phone ? `, ${esc(b.user_phone)}` : '';
     return `• ${fmtDmyWd(b.date)} — <b>${b.time}</b> — ${esc(b.user_name || 'клиент')}${phone}`;
   });
-  await ctx.editMsg('📨 <b>Записи на ближайшие 7 дней:</b>\n\n' + lines.join('\n'), nearestKb(bookings));
+  await ctx.editMsg('📨 <b>Записи на ближайшие 30 дней</b>\n\n' + lines.join('\n'), nearestKb(visible, page, pages));
 }

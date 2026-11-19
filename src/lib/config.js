@@ -1,8 +1,12 @@
 // ===== Настройки салона — всё меняется здесь =====
 
-export const WORK_START = 10;            // час начала работы
-export const WORK_END = 20;              // час, к которому должен закончиться последний сеанс
-export const SLOT_MINUTES = 45;          // длина сеанса в минутах
+// Индексы дней недели: понедельник = 0, воскресенье = 6.
+export const WORK_SLOTS = {
+  2: ['12:00', '14:30', '17:00'],
+  4: ['12:00', '14:30', '17:00'],
+  6: ['10:30', '13:00', '15:30'],
+};
+export const APPOINTMENT_MINUTES = 45;
 export const BOOKING_MONTHS_AHEAD = 2;   // на сколько месяцев вперёд можно записываться
 export const ADMIN_MONTHS_BACK = 2;      // глубина календаря владельца в прошлое
 
@@ -24,11 +28,3 @@ export function parseOwnerIds(value) {
 export function pad2(n) {
   return String(n).padStart(2, '0');
 }
-
-export const TIME_SLOTS = (() => {
-  const slots = [];
-  for (let t = WORK_START * 60; t + SLOT_MINUTES <= WORK_END * 60; t += SLOT_MINUTES) {
-    slots.push(`${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`);
-  }
-  return slots;
-})();

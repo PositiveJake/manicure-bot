@@ -1,11 +1,12 @@
 import * as repo from '../lib/repo.js';
 import { esc, sendMsg, notifyOwners } from '../lib/ui.js';
-import { mainMenuKb } from '../lib/keyboards.js';
+import { mainMenuKb, phoneKb, PHONE_HOME, REMOVE_PHONE_KEYBOARD } from '../lib/keyboards.js';
 import { sendExport } from '../lib/export.js';
+import { freeSlots, renderConfirm, renderSlots } from '../lib/views.js';
 
 export default async function (message, { api, db, ownerIds }) {
-  if (message.chat?.type !== 'private' || !message.from || !message.text) return;
-  const text = message.text.trim();
+  if (message.chat?.type !== 'private' || !message.from || (!message.text && !message.contact)) return;
+  const text = message.text?.trim();
   const from = message.from;
   const chatId = message.chat.id;
   const isOwner = ownerIds.includes(from.id);
@@ -15,7 +16,10 @@ export default async function (message, { api, db, ownerIds }) {
     return;
   }
 
-  if (text === '/start' || text === '/start booking') {
+  if (text === '/start' || text === '/start booking' || text === PHONE_HOME) {
+    if (user?.awaiting_phone && await repo.cancelPhoneRequest(db, from.id)) {
+      await sendMsg(api, chatId, 'Запрос номера закрыт.', REMOVE_PHONE_KEYBOARD);
+    }
     await handleStart(api, db, message, user, ownerIds);
     return;
   }
@@ -35,8 +39,8 @@ export default async function (message, { api, db, ownerIds }) {
     return;
   }
 
-  if (user && user.awaiting_phone) {
-    await handlePhoneInput(api, db, chatId, from, text, isOwner);
+  if (user?.awaiting_phone) {
+    await handlePhoneInput(api, db, message, user, isOwner);
     return;
   }
 
@@ -68,17 +72,27 @@ async function handleStart(api, db, message, existingUser, ownerIds) {
   );
 }
 
-async function handlePhoneInput(api, db, chatId, from, text, isOwner) {
-  const cleaned = text.replace(/[ \-()\t]/g, '');
-  if (/^\+?\d{7,15}$/.test(cleaned)) {
-    await repo.setPhone(db, from.id, cleaned);
-    await repo.setAwaitingPhone(db, from.id, 0);
-    await sendMsg(api, chatId, '📞 Телефон сохранён.', mainMenuKb(isOwner));
+async function handlePhoneInput(api, db, message, user, isOwner) {
+  const { contact, from, chat } = message;
+  const digits = contact?.phone_number?.replace(/[+\s()-]/g, '');
+  if (contact?.user_id !== from.id || message.forward_origin || !/^\d{7,15}$/.test(digits ?? '')) {
+    await sendMsg(api, chat.id, 'Поделитесь номером своего аккаунта кнопкой «Поделиться номером».', phoneKb());
     return;
   }
-  await sendMsg(
-    api,
-    chatId,
-    'Не похоже на номер 🤔 Отправьте, пожалуйста, например: <b>+7 999 000-11-22</b>',
-  );
+  const phone = `+${digits}`;
+  const pending = user.pending_phone_slot;
+  if (!await repo.verifyPhone(db, from.id, pending, phone, isOwner)) return;
+  await sendMsg(api, chat.id, '📞 Номер подтверждён.', REMOVE_PHONE_KEYBOARD);
+  if (!pending) {
+    await sendMsg(api, chat.id, 'Выберите действие.', mainMenuKb(isOwner));
+    return;
+  }
+  const [dayIso, slot] = pending.split('|');
+  const ctx = { db, editMsg: (text, markup) => sendMsg(api, chat.id, text, markup) };
+  if ((await freeSlots(db, dayIso)).includes(slot)) {
+    await renderConfirm(ctx, dayIso, slot, { ...user, phone });
+  } else {
+    await sendMsg(api, chat.id, 'Выбранное время уже недоступно. Выберите другое.');
+    await renderSlots(ctx, null, null, dayIso, false);
+  }
 }

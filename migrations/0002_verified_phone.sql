@@ -1,0 +1,2 @@
+ALTER TABLE users ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN pending_phone_slot TEXT;

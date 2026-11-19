@@ -1,6 +1,6 @@
 import { currentYm, fmtDmyWd } from '../lib/dates.js';
-import { answerCb, editMsg, notifyOwners, esc } from '../lib/ui.js';
-import { CB } from '../lib/keyboards.js';
+import { answerCb, editMsg, notifyOwners, esc, sendMsg } from '../lib/ui.js';
+import { CB, backKb, bookingDoneKb, phoneBookingKb, phoneKb, REMOVE_PHONE_KEYBOARD } from '../lib/keyboards.js';
 import * as repo from '../lib/repo.js';
 import * as views from '../lib/views.js';
 
@@ -23,13 +23,19 @@ export default async function (cq, { api, db, ownerIds }) {
     fromName: [cq.from.first_name, cq.from.last_name].filter(Boolean).join(' ') || 'клиент',
     answerCb: (t, a) => answerCb(api, cq.id, t, a),
     editMsg: (text, markup) => editMsg(api, chatId, messageId, text, markup),
+    sendMsg: (text, markup) => sendMsg(api, chatId, text, markup),
     notifyOwners: (text) => notifyOwners(api, ownerIds, text),
   };
 
   try {
-    if (!viewCtx.isOwner && (await repo.getUser(db, cq.from.id))?.is_blocked) {
+    if (data === CB.NOOP) return await answerCb(api, cq.id);
+    viewCtx.user = await repo.getUser(db, cq.from.id);
+    if (!viewCtx.isOwner && viewCtx.user?.is_blocked) {
       await answerCb(api, cq.id, 'Вы заблокированы в этом боте.', true);
       return;
+    }
+    if (viewCtx.user?.awaiting_phone && await repo.cancelPhoneRequest(db, cq.from.id)) {
+      await viewCtx.sendMsg('Запрос номера закрыт.', REMOVE_PHONE_KEYBOARD);
     }
     await route(viewCtx, data);
   } catch (e) {
@@ -44,8 +50,6 @@ async function route(ctx, data) {
   const after = (prefix) => (data.startsWith(prefix + ':') ? data.slice(prefix.length + 1) : null);
 
   // ---------- общие разделы ----------
-
-  if (data === CB.NOOP) return;
 
   if (data === CB.MAIN) {
     const cq = ctx.cq;
@@ -79,7 +83,6 @@ async function route(ctx, data) {
   {
     const payload = after(CB.CDAY);
     if (payload !== null) {
-      await ctx.answerCb();
       await views.renderSlots(ctx, null, null, payload, true);
       return;
     }
@@ -89,8 +92,7 @@ async function route(ctx, data) {
     const payload = after(CB.CSLOT);
     if (payload !== null) {
       const [dayIso, slot] = payload.split('|');
-      await ctx.answerCb();
-      await views.renderConfirm(ctx, null, null, dayIso, slot);
+      await openConfirmation(ctx, dayIso, slot);
       return;
     }
   }
@@ -102,6 +104,10 @@ async function route(ctx, data) {
       if (!views.isBookableSlot(dayIso, slot)) {
         await ctx.answerCb('Это время уже недоступно. Выберите другое.', true);
         await views.renderClientCalendar(ctx, null, null, currentYm());
+        return;
+      }
+      if (!ctx.user?.phone_verified || !ctx.user.phone) {
+        await openConfirmation(ctx, dayIso, slot);
         return;
       }
       const ok = await repo.createBooking(db, userId, dayIso, slot, own);
@@ -124,7 +130,7 @@ async function route(ctx, data) {
         `📅 ${fmtDate(dayIso)} — <b>${slot}</b>\n\n` +
         'За день до сеанса придёт напоминание.\n' +
         'Отменить запись можно в «📋 Мои записи».',
-        null,
+        bookingDoneKb(),
       );
       return;
     }
@@ -156,16 +162,11 @@ async function route(ctx, data) {
 
   if (data === CB.PHONE) {
     await ctx.answerCb();
-    await repo.setAwaitingPhone(db, userId, 1);
-    await ctx.editMsg(
-      '📞 Отправьте номер телефона одним сообщением,\nнапример: <b>+7 999 000-11-22</b>',
-      { inline_keyboard: [[{ text: '❌ Не указывать', callback_data: CB.PHONE_CANCEL }]] },
-    );
+    await beginPhoneRequest(ctx);
     return;
   }
 
   if (data === CB.PHONE_CANCEL) {
-    await repo.setAwaitingPhone(db, userId, 0);
     await ctx.answerCb();
     await views.renderMainMenu(ctx);
     return;
@@ -190,10 +191,10 @@ async function route(ctx, data) {
     }
   }
 
-  if (data === CB.NEAREST) {
+  if (data === CB.NEAREST || after(CB.NEAREST) !== null) {
     if (!own) return denyOwner(ctx);
     await ctx.answerCb();
-    await views.renderNearest(ctx, null, null);
+    await views.renderNearest(ctx, parseIntOr(after(CB.NEAREST), 0));
     return;
   }
 
@@ -287,6 +288,32 @@ async function route(ctx, data) {
 
   // неизвестная кнопка — просто закрываем
   await ctx.answerCb();
+}
+
+async function openConfirmation(ctx, dayIso, slot) {
+  if (!(await views.freeSlots(ctx.db, dayIso)).includes(slot)) {
+    await ctx.answerCb('Это время уже недоступно. Выберите другое.', true);
+    await views.renderSlots(ctx, null, null, dayIso, false);
+    return;
+  }
+  await ctx.answerCb();
+  if (ctx.user?.phone_verified && ctx.user.phone) {
+    await views.renderConfirm(ctx, dayIso, slot, ctx.user);
+    return;
+  }
+  await beginPhoneRequest(ctx, dayIso, slot);
+}
+
+async function beginPhoneRequest(ctx, dayIso, slot) {
+  if (!ctx.user) {
+    await repo.upsertUser(ctx.db, ctx.userId, ctx.cq.from.username ?? null, ctx.fromName);
+  }
+  await repo.requestPhone(ctx.db, ctx.userId, dayIso ? `${dayIso}|${slot}` : null);
+  await ctx.editMsg(dayIso
+    ? `📅 ${fmtDate(dayIso)} — <b>${slot}</b>\nПодтвердите номер, чтобы продолжить.`
+    : '📞 Подтвердите номер вашего аккаунта Telegram.',
+  dayIso ? phoneBookingKb(dayIso) : backKb('🏠 В главное меню', CB.MAIN));
+  await ctx.sendMsg('Нажмите «Поделиться номером» под полем ввода. Номер будет доступен мастеру.', phoneKb());
 }
 
 async function denyOwner(ctx) {

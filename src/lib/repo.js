@@ -1,4 +1,5 @@
 import { sql } from './d1.js';
+import { APPOINTMENT_MINUTES } from './config.js';
 
 // Все запросы к базе. Строки из raw-запросов приходят со snake_case ключами
 // (tg_id, user_name, …) — этим же стилем пользуемся во views и хендлерах.
@@ -23,12 +24,24 @@ export async function upsertUser(db, tgId, username, name) {
       name = COALESCE(excluded.name, users.name)`);
 }
 
-export async function setPhone(db, tgId, phone) {
-  await db.run(sql`UPDATE users SET phone = ${phone} WHERE tg_id = ${tgId}`);
+export async function requestPhone(db, tgId, pendingSlot = null) {
+  await db.run(sql`
+    UPDATE users SET awaiting_phone = 1, pending_phone_slot = ${pendingSlot} WHERE tg_id = ${tgId}`);
 }
 
-export async function setAwaitingPhone(db, tgId, flag) {
-  await db.run(sql`UPDATE users SET awaiting_phone = ${flag ? 1 : 0} WHERE tg_id = ${tgId}`);
+export async function cancelPhoneRequest(db, tgId) {
+  const result = await db.run(sql`
+    UPDATE users SET awaiting_phone = 0, pending_phone_slot = NULL
+    WHERE tg_id = ${tgId} AND awaiting_phone = 1`);
+  return result.rowsAffected > 0;
+}
+
+export async function verifyPhone(db, tgId, pendingSlot, phone, isOwner) {
+  const result = await db.run(sql`
+    UPDATE users SET phone = ${phone}, phone_verified = 1, awaiting_phone = 0, pending_phone_slot = NULL
+    WHERE tg_id = ${tgId} AND awaiting_phone = 1 AND pending_phone_slot IS ${pendingSlot}
+      AND (is_blocked = 0 OR ${isOwner ? 1 : 0})`);
+  return result.rowsAffected > 0;
 }
 
 export async function setBlocked(db, tgId, state) {
@@ -43,13 +56,18 @@ export async function createBooking(db, tgId, dateIso, time, isOwner = false) {
     INSERT INTO bookings (tg_user_id, date, time, created_at)
     SELECT tg_id, ${dateIso}, ${time}, ${nowIso()}
     FROM users WHERE tg_id = ${tgId} AND (is_blocked = 0 OR ${isOwner ? 1 : 0})
+      AND phone_verified = 1 AND phone <> ''
+      AND NOT EXISTS (
+        SELECT 1 FROM bookings
+        WHERE date = ${dateIso} AND ABS(unixepoch(time) - unixepoch(${time})) < ${APPOINTMENT_MINUTES * 60}
+      )
     ON CONFLICT(date, time) DO NOTHING`);
   return res.rowsAffected > 0;
 }
 
 export async function getBooking(db, id) {
   return await db.get(sql`
-    SELECT b.*, u.name AS user_name, u.phone AS user_phone,
+    SELECT b.*, u.name AS user_name, CASE WHEN u.phone_verified = 1 THEN u.phone ELSE '' END AS user_phone,
            u.username AS user_username, u.is_blocked AS user_blocked
     FROM bookings b JOIN users u ON u.tg_id = b.tg_user_id
     WHERE b.id = ${id}`);
@@ -81,22 +99,24 @@ export async function getDayCounts(db, dayFrom, dayTo) {
 
 export async function getBookingsForDay(db, dayIso) {
   return await db.all(sql`
-    SELECT b.*, u.name AS user_name, u.phone AS user_phone, u.username AS user_username
+    SELECT b.*, u.name AS user_name, CASE WHEN u.phone_verified = 1 THEN u.phone ELSE '' END AS user_phone,
+           u.username AS user_username
     FROM bookings b JOIN users u ON u.tg_id = b.tg_user_id
     WHERE b.date = ${dayIso} ORDER BY b.time`);
 }
 
-export async function getBookingsBetween(db, dayFrom, dayTo, limit = 50) {
+export async function getBookingsBetween(db, dayFrom, dayTo, time) {
   return await db.all(sql`
-    SELECT b.*, u.name AS user_name, u.phone AS user_phone, u.username AS user_username
+    SELECT b.*, u.name AS user_name, CASE WHEN u.phone_verified = 1 THEN u.phone ELSE '' END AS user_phone
     FROM bookings b JOIN users u ON u.tg_id = b.tg_user_id
-    WHERE b.date BETWEEN ${dayFrom} AND ${dayTo}
-    ORDER BY b.date, b.time LIMIT ${limit}`);
+    WHERE b.date BETWEEN ${dayFrom} AND ${dayTo} AND (b.date > ${dayFrom} OR b.time > ${time})
+    ORDER BY b.date, b.time`);
 }
 
 export async function getUnsentReminders(db, today, time, lastDay, now, limit) {
   return await db.all(sql`
-    SELECT b.*, u.name AS user_name, u.phone AS user_phone, u.username AS user_username
+    SELECT b.*, u.name AS user_name, CASE WHEN u.phone_verified = 1 THEN u.phone ELSE '' END AS user_phone,
+           u.username AS user_username
     FROM bookings b JOIN users u ON u.tg_id = b.tg_user_id
     WHERE b.reminder_sent = 0 AND b.reminder_claim_until <= ${now}
       AND b.date BETWEEN ${today} AND ${lastDay}
@@ -141,7 +161,8 @@ export async function listBlocked(db) {
 export async function allBookingsForExport(db) {
   return await db.all(sql`
     SELECT b.id, b.date, b.time, b.reminder_sent, b.created_at,
-           u.name AS user_name, u.phone AS user_phone, u.username AS user_username, u.tg_id
+           u.name AS user_name, CASE WHEN u.phone_verified = 1 THEN u.phone ELSE '' END AS user_phone,
+           u.username AS user_username, u.tg_id
     FROM bookings b JOIN users u ON u.tg_id = b.tg_user_id
     ORDER BY b.date, b.time LIMIT 5000`);
 }

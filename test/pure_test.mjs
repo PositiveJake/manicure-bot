@@ -1,14 +1,14 @@
 // Тесты чистой логики (без SDK) — запуск: node test/pure_test.mjs
 import assert from 'node:assert/strict';
 
-import { TIME_SLOTS, pad2 } from '../src/lib/config.js';
+import { WORK_SLOTS, pad2 } from '../src/lib/config.js';
 import {
   shiftYmd, daysInMonth, weekdayIndex, fmtDmyWd, monthTitle, clampYm, isValidYmd,
 } from '../src/lib/dates.js';
 import {
   mainMenuKb, clientCalendarKb, adminCalendarKb, slotsKb, confirmKb,
   myBookingsKb, cancelConfirmKb, adminDayKb, bookingDetailKb,
-  adminCancelConfirmKb, clientsKb, clientDetailKb, blockedKb, nearestKb, phoneKb,
+  adminCancelConfirmKb, clientsKb, clientDetailKb, blockedKb, nearestKb, phoneKb, phoneBookingKb, bookingDoneKb,
 } from '../src/lib/keyboards.js';
 import { isReminderDue, whenWord, clientText } from '../src/lib/reminderLogic.js';
 
@@ -19,11 +19,14 @@ function ok(name, cond) {
   console.log(`  ok: ${name}`);
 }
 const flat = (markup) => markup.inline_keyboard.flat();
-const cbSet = (markup) => new Set(flat(markup).map((b) => b.callback_data));
 
 // ---------- слоты ----------
 
-ok('слоты 10:00..19:00, 13 шт', TIME_SLOTS[0] === '10:00' && TIME_SLOTS[TIME_SLOTS.length - 1] === '19:00' && TIME_SLOTS.length === 13);
+assert.deepEqual(WORK_SLOTS, {
+  2: ['12:00', '14:30', '17:00'],
+  4: ['12:00', '14:30', '17:00'],
+  6: ['10:30', '13:00', '15:30'],
+});
 
 // ---------- даты ----------
 
@@ -42,18 +45,17 @@ ok('pad2', pad2(5) === '05' && pad2(45) === '45');
 // ---------- клавиатура клиента ----------
 
 {
-  const free = new Set(['2026-10-12', '2026-10-13']);
-  const kb = clientCalendarKb(2026, 10, 202610, 202612, free, '2026-10-11');
+  const free = ['2026-10-14', '2026-10-16'];
+  const kb = clientCalendarKb(202610, 202610, 202612, free);
   const all = flat(kb);
   ok('заголовок месяца', all.some((b) => b.text === 'Октябрь 2026'));
   ok('назад в прошлом месяце недоступна', all.every((b) => b.text !== '◀️' || b.callback_data === 'noop'));
   ok('вперёд доступна', all.some((b) => b.callback_data === 'ccal:202611'));
   const cday = all.filter((b) => b.callback_data?.startsWith('cday:'));
-  ok('свободные дни кликабельны (12 и 13)',
-    cday.length === 2 && cday.some((b) => b.callback_data === 'cday:2026-10-12' && b.text === '12')
-    && cday.some((b) => b.callback_data === 'cday:2026-10-13' && b.text === '13'));
-  const dots = all.filter((b) => b.text === '·');
-  ok('недоступные дни — точки (29)', dots.length === 29);
+  ok('доступные дни показываются с названием дня недели',
+    cday.length === 2 && cday.some((b) => b.callback_data === 'cday:2026-10-14' && b.text === 'Среда, 14.10')
+    && cday.some((b) => b.callback_data === 'cday:2026-10-16' && b.text === 'Пятница, 16.10'));
+  ok('из календаря есть выход в меню', all.some((b) => b.callback_data === 'menu:main'));
 }
 
 // ---------- клавиатура владельца ----------
@@ -73,10 +75,10 @@ ok('pad2', pad2(5) === '05' && pad2(45) === '45');
 ok('главное меню с админкой', flat(mainMenuKb(true)).some((b) => b.callback_data === 'menu:admin'));
 ok('главное меню без админки', flat(mainMenuKb(false)).every((b) => b.callback_data !== 'menu:admin'));
 ok('слоты по ≤3 в ряд + назад', (() => {
-  const kb = slotsKb('2026-10-12', TIME_SLOTS);
+  const kb = slotsKb('2026-10-12', WORK_SLOTS[2]);
   const dataRows = kb.inline_keyboard.slice(0, -1);
   return dataRows.every((r) => r.length <= 3 && r.every((b) => b.callback_data.startsWith('cslot:2026-10-12|')))
-    && dataRows.flat().length === TIME_SLOTS.length
+    && dataRows.flat().length === WORK_SLOTS[2].length
     && kb.inline_keyboard.at(-1)[0].callback_data === 'ccal:202610';
 })());
 ok('подтверждение записи', flat(confirmKb('2026-10-12', '14:30'))
@@ -116,15 +118,15 @@ ok('список заблокированных', flat(blockedKb([{ tg_id: 42, n
   .some((b) => b.callback_data === 'blk:42:bl'));
 ok('ближайшие записи', flat(nearestKb([{ id: 3, date: '2026-10-12', time: '12:00', user_name: 'Боб' }]))
   .some((b) => b.callback_data === 'abk:3'));
-ok('клавиатура телефона', flat(phoneKb()).some((b) => b.callback_data === 'phone:cancel'));
+ok('клавиатура Telegram запрашивает контакт', phoneKb().keyboard.flat().some((b) => b.request_contact));
 
 // ---------- согласованность callback-данных с роутером ----------
 
 {
-  const known = /^(noop|menu:(main|book|mine|phone|admin)|phone:cancel|ccal:\d{6}|cday:\d{4}-\d{2}-\d{2}|cslot:[\d-]+\|[\d:]+|ccf:[\d-]+\|[\d:]+|ccn|cancelq:\d+|cancel2:\d+|acal:\d{6}|aday:\d{4}-\d{2}-\d{2}|abk:\d+|aupd:\d+|aup2:\d+|blk:\d+:[a-z:0-9]+|acl:\d+|aclu:\d+|nearest|blocked)$/;
+  const known = /^(noop|menu:(main|book|mine|phone|admin)|phone:cancel|ccal:\d{6}|cday:\d{4}-\d{2}-\d{2}|cslot:[\d-]+\|[\d:]+|ccf:[\d-]+\|[\d:]+|ccn|cancelq:\d+|cancel2:\d+|acal:\d{6}|aday:\d{4}-\d{2}-\d{2}|abk:\d+|aupd:\d+|aup2:\d+|blk:\d+:[a-z:0-9]+|acl:\d+|aclu:\d+|nearest(?::\d+)?|blocked)$/;
   const kbs = [
-    mainMenuKb(true), mainMenuKb(false), phoneKb(),
-    clientCalendarKb(2026, 10, 202610, 202612, new Set(['2026-10-12']), '2026-10-11'),
+    mainMenuKb(true), mainMenuKb(false), bookingDoneKb(), phoneBookingKb('2026-10-14'),
+    clientCalendarKb(202610, 202610, 202612, ['2026-10-14']),
     adminCalendarKb(2026, 10, 202608, 202612, {}),
     slotsKb('2026-10-12', ['10:00', '10:45', '11:30', '12:15']),
     confirmKb('2026-10-12', '10:00'),
@@ -136,7 +138,7 @@ ok('клавиатура телефона', flat(phoneKb()).some((b) => b.callba
     clientsKb([{ tg_id: 42, name: null, active_bookings: 0 }], 0, 1, new Set()),
     clientDetailKb(42, true),
     blockedKb([{ tg_id: 42, name: 'A' }]),
-    nearestKb([{ id: 3, date: '2026-10-12', time: '10:00', user_name: 'B' }]),
+    nearestKb([{ id: 3, date: '2026-10-12', time: '10:00', user_name: 'B' }], 1, 3),
   ];
   for (const kb of kbs) {
     for (const b of flat(kb)) {

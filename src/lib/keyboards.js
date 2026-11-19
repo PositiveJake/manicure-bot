@@ -1,5 +1,5 @@
 import { pad2 } from './config.js';
-import { WEEKDAYS_RU, fmtDmy, daysInMonth, weekdayIndex, monthTitle, currentYm, ymOfYmd } from './dates.js';
+import { WEEKDAYS_RU, fmtDmy, daysInMonth, weekdayIndex, monthTitle, currentYm, ymOfYmd, shiftYm } from './dates.js';
 
 // Все inline-клавиатуры. Префиксы callback-данных должны совпадать с роутером
 // в handlers/callback_query.js — там же они и разбираются.
@@ -33,6 +33,9 @@ export const CB = {
 
 const btn = (text, callback_data) => ({ text, callback_data });
 const kb = (rows) => ({ inline_keyboard: rows });
+export const PHONE_HOME = '🏠 В главное меню';
+export const REMOVE_PHONE_KEYBOARD = { remove_keyboard: true };
+const home = () => btn(PHONE_HOME, CB.MAIN);
 
 export function mainMenuKb(isOwn) {
   const rows = [[btn('📅 Записаться', CB.BOOK)]];
@@ -42,7 +45,15 @@ export function mainMenuKb(isOwn) {
 }
 
 export function phoneKb() {
-  return kb([[btn('❌ Не указывать', CB.PHONE_CANCEL)]]);
+  return {
+    keyboard: [[{ text: '📱 Поделиться номером', request_contact: true }], [{ text: PHONE_HOME }]],
+    resize_keyboard: true,
+    one_time_keyboard: true,
+  };
+}
+
+export function phoneBookingKb(dayIso) {
+  return kb([[btn('⬅️ Назад', `${CB.CDAY}:${dayIso}`), home()]]);
 }
 
 // dayCb: { 'YYYY-MM-DD': callbackData | null } — null = день недоступен
@@ -69,21 +80,20 @@ export function calendarKb(year, month, minYM, maxYM, navPrefix, dayCb, dayLabel
   return kb(rows);
 }
 
-export function clientCalendarKb(year, month, minYM, maxYM, freeDays, todayIso) {
-  const dayCb = {};
-  const dayLabel = {};
-  const days = daysInMonth(year, month);
-  for (let dnum = 1; dnum <= days; dnum++) {
-    const d = `${year}-${pad2(month)}-${pad2(dnum)}`;
-    if (d < todayIso || !freeDays.has(d)) {
-      dayCb[d] = null;
-      dayLabel[d] = '·';
-    } else {
-      dayCb[d] = `${CB.CDAY}:${d}`;
-      dayLabel[d] = String(dnum);
-    }
+export function clientCalendarKb(ym, minYM, maxYM, freeDays) {
+  const weekdayNames = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
+  const prev = shiftYm(ym, -1);
+  const next = shiftYm(ym, 1);
+  const rows = [[
+    btn('◀️', prev >= minYM ? `${CB.CCAL}:${prev}` : CB.NOOP),
+    btn(monthTitle(ym), CB.NOOP),
+    btn('▶️', next <= maxYM ? `${CB.CCAL}:${next}` : CB.NOOP),
+  ]];
+  for (const day of freeDays) {
+    rows.push([btn(`${weekdayNames[weekdayIndex(day)]}, ${fmtDmy(day).slice(0, 5)}`, `${CB.CDAY}:${day}`)]);
   }
-  return calendarKb(year, month, minYM, maxYM, CB.CCAL, dayCb, dayLabel);
+  rows.push([home()]);
+  return kb(rows);
 }
 
 export function adminCalendarKb(year, month, minYM, maxYM, counts) {
@@ -102,6 +112,7 @@ export function adminCalendarKb(year, month, minYM, maxYM, counts) {
     btn('👥 Клиенты', `${CB.ACL}:0`),
     btn('🚫 Заблокированные', CB.BLOCKED),
   ]);
+  markup.inline_keyboard.push([home()]);
   return markup;
 }
 
@@ -113,15 +124,19 @@ export function slotsKb(dayIso, slots) {
     if (line.length === 3) { rows.push(line); line = []; }
   }
   if (line.length) rows.push(line);
-  rows.push([btn('⬅️ К календарю', `${CB.CCAL}:${ymOfYmd(dayIso)}`)]);
+  rows.push([btn('⬅️ К календарю', `${CB.CCAL}:${ymOfYmd(dayIso)}`), home()]);
   return kb(rows);
 }
 
 export function confirmKb(dayIso, slot) {
-  return kb([[
-    btn('✅ Подтвердить', `${CB.CCF}:${dayIso}|${slot}`),
-    btn('❌ Отменить', CB.CCN),
-  ]]);
+  return kb([
+    [btn('✅ Подтвердить', `${CB.CCF}:${dayIso}|${slot}`)],
+    [btn('⬅️ Назад', `${CB.CDAY}:${dayIso}`), home()],
+  ]);
+}
+
+export function bookingDoneKb() {
+  return kb([[btn('📋 Мои записи', CB.MINE), home()]]);
 }
 
 export function myBookingsKb(bookings) {
@@ -147,7 +162,7 @@ export function adminDayKb(dayIso, bookings) {
   const rows = bookings.map((b) => [
     btn(`❌ ${b.time} — ${(b.user_name || 'клиент').slice(0, 18)}`, `${CB.ABK}:${b.id}`),
   ]);
-  rows.push([btn('⬅️ К календарю', `${CB.ACAL}:${ymOfYmd(dayIso)}`)]);
+  rows.push([btn('⬅️ К календарю', `${CB.ACAL}:${ymOfYmd(dayIso)}`), home()]);
   return kb(rows);
 }
 
@@ -199,10 +214,17 @@ export function blockedKb(users) {
   return kb(rows);
 }
 
-export function nearestKb(bookings) {
+export function nearestKb(bookings, page = 0, pages = 1) {
   const rows = bookings.map((b) => [
     btn(`❌ ${fmtDmy(b.date)} ${b.time} — ${(b.user_name || 'клиент').slice(0, 18)}`, `${CB.ABK}:${b.id}`),
   ]);
-  rows.push([btn('⬅️ В панель', `${CB.ACAL}:${currentYm()}`)]);
+  if (pages > 1) {
+    const nav = [];
+    if (page > 0) nav.push(btn('◀️', `${CB.NEAREST}:${page - 1}`));
+    nav.push(btn(`${page + 1}/${pages}`, CB.NOOP));
+    if (page + 1 < pages) nav.push(btn('▶️', `${CB.NEAREST}:${page + 1}`));
+    rows.push(nav);
+  }
+  rows.push([btn('⬅️ В панель', `${CB.ACAL}:${currentYm()}`), home()]);
   return kb(rows);
 }
