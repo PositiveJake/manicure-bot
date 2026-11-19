@@ -50,15 +50,16 @@ async function waitForWebhook(url, secret) {
 }
 
 async function deploy() {
-  if (!/^[a-f0-9]{32}$/i.test(CLOUDFLARE_ACCOUNT_ID ?? '') || !CLOUDFLARE_API_TOKEN) {
-    throw new Error('Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in GitHub Actions.');
-  }
   if (!/^\d+:[\w-]+$/.test(TELEGRAM_BOT_TOKEN ?? '')) {
     throw new Error('Set the BotFather token in the TELEGRAM_BOT_TOKEN GitHub Actions secret.');
   }
   const ownerIds = parseOwnerIds(TELEGRAM_OWNER_IDS);
   const telegram = createTelegramApi(TELEGRAM_BOT_TOKEN);
   const bot = await telegram.getMe();
+  console.log('Telegram bot token verified.');
+  if (!/^[a-f0-9]{32}$/i.test(CLOUDFLARE_ACCOUNT_ID ?? '') || !CLOUDFLARE_API_TOKEN) {
+    throw new Error('Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in GitHub Actions.');
+  }
   const config = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
   const { subdomain } = await cloudflare('workers/subdomain');
   if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(subdomain ?? '')) {
@@ -73,8 +74,6 @@ async function deploy() {
   if (!/^[a-f0-9-]{36}$/i.test(database.database_id ?? '')) {
     throw new Error('Cloudflare did not return a valid D1 database ID.');
   }
-  config.vars = { TELEGRAM_OWNER_IDS: ownerIds.join(',') };
-
   const secret = createHmac('sha256', TELEGRAM_BOT_TOKEN).update('manicure-bot/telegram-webhook').digest('hex');
   const dir = await mkdtemp(join(tmpdir(), 'manicure-bot-'));
   const secretsPath = join(dir, 'secrets.json');
@@ -82,6 +81,7 @@ async function deploy() {
     await writeFile(configPath, JSON.stringify(config));
     await writeFile(secretsPath, JSON.stringify({
       TELEGRAM_BOT_TOKEN,
+      TELEGRAM_OWNER_IDS: ownerIds.join(','),
       TELEGRAM_WEBHOOK_SECRET: secret,
     }), { mode: 0o600 });
     const wrangler = (...args) => execFileSync(process.execPath, [
