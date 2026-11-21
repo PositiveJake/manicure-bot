@@ -7,12 +7,13 @@ import { connectD1 } from '../src/lib/d1.js';
 import { shiftYm, shiftYmd, todayIso } from '../src/lib/dates.js';
 import { sweepReminders } from '../src/lib/reminders.js';
 import { freeSlots, renderNearest } from '../src/lib/views.js';
-import { closeSlot, createBooking } from '../src/lib/repo.js';
+import { setSlotSelected, createBooking } from '../src/lib/repo.js';
 import { sendMonthNotices } from '../src/lib/monthNotices.js';
 
 const schema = readFileSync(new URL('../migrations/0001_bookings.sql', import.meta.url), 'utf8');
 const phoneMigration = readFileSync(new URL('../migrations/0002_verified_phone.sql', import.meta.url), 'utf8');
 const monthlyMigration = readFileSync(new URL('../migrations/0003_monthly_windows.sql', import.meta.url), 'utf8');
+const selectionsMigration = readFileSync(new URL('../migrations/0004_slot_selections.sql', import.meta.url), 'utf8');
 const client = 101;
 const owner = 201;
 
@@ -23,6 +24,7 @@ function createDatabase(t, seed = '') {
   sqlite.exec(seed);
   sqlite.exec(phoneMigration);
   sqlite.exec(monthlyMigration);
+  sqlite.exec(selectionsMigration);
   return {
     sqlite,
     binding: {
@@ -178,6 +180,7 @@ test('Telegram webhook covers booking, blocked buttons, owner cancellation and p
   assert.ok(calls.some(({ body }) => body.chat_id === client && /отменена мастером/.test(body.text)));
 
   const decemberDay = '2026-12-02';
+  const extraDay = '2026-12-03';
   await request(button(client, 'nextmonth'));
   assert.match(calls.at(-1).body.text, /только владельцу/);
   await request(button(owner, 'freewindows'));
@@ -185,7 +188,20 @@ test('Telegram webhook covers booking, blocked buttons, owner cancellation and p
   assert.match(calls.at(-1).body.text, /20\.11\.2026.*12:00/);
   assert.doesNotMatch(calls.at(-1).body.text, /02\.12\.2026/);
   await request(button(owner, 'nextmonth:202612'));
-  assert.ok(callbackKeys().some((b) => b.callback_data === `nextday:${decemberDay}`));
+  const calendarDates = callbackKeys().filter((b) => b.callback_data.startsWith('nextday:'));
+  assert.equal(calendarDates.length, 31);
+  assert.equal(calendarDates.find((b) => b.callback_data === `nextday:${decemberDay}`).style, 'success');
+  assert.equal(calendarDates.find((b) => b.callback_data === `nextday:${extraDay}`).style, undefined);
+  await request(button(owner, `nextday:${extraDay}`));
+  const editorTimes = callbackKeys().filter((b) => b.callback_data.startsWith('nextslot:'));
+  assert.equal(editorTimes.length, 19);
+  assert.equal(editorTimes[0].text, '10:00');
+  assert.equal(editorTimes[1].text, '10:30');
+  assert.equal(editorTimes.at(-1).text, '19:00');
+  await request(button(owner, `nextslot:${extraDay}|19:00|0`));
+  assert.equal(callbackKeys().find((b) => b.callback_data === `nextslot:${extraDay}|19:00|1`).style, 'success');
+  await request(button(owner, 'nextmonth'));
+  assert.equal(callbackKeys().find((b) => b.callback_data === `nextday:${extraDay}`).style, 'success');
   await request(button(owner, `nextday:${decemberDay}`));
   assert.ok(callbackKeys().some((b) => b.callback_data === `nextslot:${decemberDay}|12:00|1`));
   await request(button(owner, `nextslot:${decemberDay}|12:00|1`));
@@ -208,11 +224,17 @@ test('Telegram webhook covers booking, blocked buttons, owner cancellation and p
   assert.equal(count(), 0);
   await request(button(client, `ccf:${decemberDay}|14:30`));
   assert.equal(count(), 1);
+  await request(button(client, `cday:${extraDay}`));
+  assert.deepEqual(callbackKeys().filter((b) => b.callback_data.startsWith('cslot:')).map((b) => b.text), ['19:00']);
+  await request(button(client, `ccf:${extraDay}|18:30`));
+  assert.equal(count(), 1);
+  await request(button(client, `ccf:${extraDay}|19:00`));
+  assert.equal(count(), 2);
 
   await request(button(owner, `blk:${client}:cl`));
   assert.equal(sqlite.prepare('SELECT is_blocked FROM users WHERE tg_id = ?').get(client).is_blocked, 1);
   await request(button(client, `ccf:${decemberDay}|17:00`));
-  assert.equal(count(), 1);
+  assert.equal(count(), 2);
   assert.match(calls.at(-1).body.text, /заблокированы/);
 });
 
@@ -248,8 +270,19 @@ test('new slots do not overlap a booking made with the old schedule', async (t) 
   sqlite.exec("UPDATE users SET phone_verified = 1; INSERT INTO bookings (tg_user_id, date, time) VALUES (101, '2026-11-20', '11:30')");
   assert.deepEqual(await freeSlots(db, '2026-11-20'), ['14:30', '17:00']);
   assert.equal(await createBooking(db, client, '2026-11-20', '12:00'), false);
-  assert.equal(await closeSlot(db, '2026-11-20', '12:00'), false);
+  assert.equal(await setSlotSelected(db, '2026-11-20', '12:00', false), false);
   assert.equal(await createBooking(db, client, '2026-11-20', '14:30'), true);
+});
+
+test('legacy closed windows stay closed until reopened in the calendar editor', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-19T06:00:00Z') });
+  const { sqlite, binding } = createDatabase(t, "INSERT INTO users (tg_id, phone) VALUES (101, '+79991234567')");
+  sqlite.exec("UPDATE users SET phone_verified = 1; INSERT INTO closed_slots (date, time) VALUES ('2026-11-20', '12:00')");
+  const db = connectD1(binding);
+  assert.deepEqual(await freeSlots(db, '2026-11-20'), ['14:30', '17:00']);
+  assert.equal(await createBooking(db, client, '2026-11-20', '12:00'), false);
+  assert.equal(await setSlotSelected(db, '2026-11-20', '12:00', true), true);
+  assert.equal(await createBooking(db, client, '2026-11-20', '12:00'), true);
 });
 
 test('monthly owner notices start at the Moscow deadline and retry only failed deliveries', async (t) => {

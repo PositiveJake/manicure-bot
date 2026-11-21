@@ -1,5 +1,6 @@
 import { sql } from './d1.js';
 import { APPOINTMENT_MINUTES } from './config.js';
+import { defaultTimes } from './slotRules.js';
 
 // Все запросы к базе. Строки из raw-запросов приходят со snake_case ключами
 // (tg_id, user_name, …) — этим же стилем пользуемся во views и хендлерах.
@@ -52,12 +53,16 @@ export async function setBlocked(db, tgId, state) {
 
 // False — слот только что занял кто-то другой (уникальный индекс по date+time)
 export async function createBooking(db, tgId, dateIso, time, isOwner = false) {
+  const isDefault = defaultTimes(dateIso).includes(time) ? 1 : 0;
   const res = await db.run(sql`
     INSERT INTO bookings (tg_user_id, date, time, created_at)
     SELECT tg_id, ${dateIso}, ${time}, ${nowIso()}
     FROM users WHERE tg_id = ${tgId} AND (is_blocked = 0 OR ${isOwner ? 1 : 0})
       AND phone_verified = 1 AND phone <> ''
-      AND NOT EXISTS (SELECT 1 FROM closed_slots WHERE date = ${dateIso} AND time = ${time})
+      AND COALESCE(
+        (SELECT selected FROM slot_selections WHERE date = ${dateIso} AND time = ${time}),
+        ${isDefault} AND NOT EXISTS (SELECT 1 FROM closed_slots WHERE date = ${dateIso} AND time = ${time})
+      ) = 1
       AND NOT EXISTS (
         SELECT 1 FROM bookings
         WHERE date = ${dateIso} AND ABS(unixepoch(time) - unixepoch(${time})) < ${APPOINTMENT_MINUTES * 60}
@@ -89,25 +94,26 @@ export async function getUserBookings(db, tgId, todayIso, nowHm) {
 
 export async function getSlotOccupancy(db, dayFrom, dayTo) {
   return await db.all(sql`
-    SELECT date, time, 0 AS closed FROM bookings WHERE date BETWEEN ${dayFrom} AND ${dayTo}
+    SELECT date, time, 'booking' AS kind, NULL AS selected
+    FROM bookings WHERE date BETWEEN ${dayFrom} AND ${dayTo}
     UNION ALL
-    SELECT date, time, 1 AS closed FROM closed_slots WHERE date BETWEEN ${dayFrom} AND ${dayTo}`);
+    SELECT date, time, 'legacy' AS kind, 0 AS selected
+    FROM closed_slots WHERE date BETWEEN ${dayFrom} AND ${dayTo}
+    UNION ALL
+    SELECT date, time, 'selection' AS kind, selected
+    FROM slot_selections WHERE date BETWEEN ${dayFrom} AND ${dayTo}`);
 }
 
-export async function closeSlot(db, date, time) {
+export async function setSlotSelected(db, date, time, selected) {
   const result = await db.run(sql`
-    INSERT INTO closed_slots (date, time)
-    SELECT ${date}, ${time}
+    INSERT INTO slot_selections (date, time, selected)
+    SELECT ${date}, ${time}, ${selected ? 1 : 0}
     WHERE NOT EXISTS (
       SELECT 1 FROM bookings
       WHERE date = ${date} AND ABS(unixepoch(time) - unixepoch(${time})) < ${APPOINTMENT_MINUTES * 60}
     )
-    ON CONFLICT (date, time) DO NOTHING`);
+    ON CONFLICT (date, time) DO UPDATE SET selected = excluded.selected`);
   return result.rowsAffected > 0;
-}
-
-export async function reopenSlot(db, date, time) {
-  await db.run(sql`DELETE FROM closed_slots WHERE date = ${date} AND time = ${time}`);
 }
 
 export async function claimMonthNotice(db, month, ownerId, now, until) {

@@ -1,15 +1,15 @@
-import { WORK_SLOTS, APPOINTMENT_MINUTES } from './config.js';
-import { hm, isValidYmd, nowLocal, shiftYmd, weekdayIndex, ymd, ymOfYmd } from './dates.js';
+import { APPOINTMENT_MINUTES, SELECTABLE_TIMES } from './config.js';
+import { hm, isValidYmd, nowLocal, shiftYmd, ymd, ymOfYmd } from './dates.js';
 import { getSlotOccupancy } from './repo.js';
+import { defaultTimes } from './slotRules.js';
 
-export function scheduledTimes(day) {
-  return WORK_SLOTS[weekdayIndex(day)] ?? [];
+function isBookableDay(day, today) {
+  return isValidYmd(day) && day >= today && ymOfYmd(day) === ymOfYmd(today);
 }
 
 export function isBookableSlot(day, slot, now = nowLocal()) {
   const today = ymd(now);
-  return isValidYmd(day) && day >= today && ymOfYmd(day) === ymOfYmd(today)
-    && scheduledTimes(day).includes(slot) && (day > today || slot > hm(now));
+  return isBookableDay(day, today) && SELECTABLE_TIMES.includes(slot) && (day > today || slot > hm(now));
 }
 
 function minutes(time) {
@@ -17,7 +17,7 @@ function minutes(time) {
   return hours * 60 + minute;
 }
 
-export async function readSchedule(db, first, last) {
+export async function readSchedule(db, first, last, { editable = false } = {}) {
   const byDay = new Map();
   for (const row of await getSlotOccupancy(db, first, last)) {
     if (!byDay.has(row.date)) byDay.set(row.date, []);
@@ -26,14 +26,23 @@ export async function readSchedule(db, first, last) {
 
   const days = [];
   for (let date = first; date <= last; date = shiftYmd(date, 1)) {
-    const taken = byDay.get(date) ?? [];
-    const slots = scheduledTimes(date).map((time) => {
-      if (taken.some((row) => !row.closed && Math.abs(minutes(row.time) - minutes(time)) < APPOINTMENT_MINUTES)) {
-        return { time, status: 'booked' };
-      }
-      const closed = taken.some((row) => row.closed && row.time === time);
-      return { time, status: closed ? 'closed' : 'open' };
-    });
+    const bookedMinutes = [];
+    const legacyClosed = new Set();
+    const overrides = new Map();
+    for (const row of byDay.get(date) ?? []) {
+      if (row.kind === 'booking') bookedMinutes.push(minutes(row.time));
+      if (row.kind === 'legacy') legacyClosed.add(row.time);
+      if (row.kind === 'selection') overrides.set(row.time, row.selected === 1);
+    }
+    const defaults = defaultTimes(date);
+    const slots = [];
+    for (const time of SELECTABLE_TIMES) {
+      const selected = overrides.get(time) ?? (defaults.includes(time) && !legacyClosed.has(time));
+      if (!editable && !selected) continue;
+      const start = minutes(time);
+      const booked = bookedMinutes.some((bookedStart) => Math.abs(bookedStart - start) < APPOINTMENT_MINUTES);
+      slots.push({ time, selected, booked });
+    }
     if (slots.length) days.push({ date, slots });
   }
   return days;
@@ -44,15 +53,15 @@ export async function availableDays(db, now, last) {
   const time = hm(now);
   return (await readSchedule(db, today, last)).map(({ date, slots }) => ({
     date,
-    times: slots.filter((slot) => slot.status === 'open' && (date > today || slot.time > time)).map((slot) => slot.time),
+    times: slots.filter((slot) => !slot.booked && (date > today || slot.time > time)).map((slot) => slot.time),
   })).filter(({ times }) => times.length);
 }
 
 export async function freeSlots(db, day) {
-  if (!isValidYmd(day)) return [];
   const now = nowLocal();
-  const times = scheduledTimes(day).filter((time) => isBookableSlot(day, time, now));
-  if (!times.length) return [];
+  const today = ymd(now);
+  if (!isBookableDay(day, today)) return [];
   const [result] = await readSchedule(db, day, day);
-  return result.slots.filter(({ time, status }) => status === 'open' && times.includes(time)).map(({ time }) => time);
+  return (result?.slots ?? []).filter(({ time, booked }) => !booked && (day > today || time > hm(now)))
+    .map(({ time }) => time);
 }

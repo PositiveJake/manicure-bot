@@ -17,7 +17,7 @@ export async function sendMonthNotices(api, db, ownerIds, now = nowLocal(), time
       await api.sendMessage({
         chat_id: ownerId,
         text: `🗓 <b>Проверьте окна · ${monthTitle(month)}</b>\n\n` +
-          `Клиенты увидят открытые окна с ${fmtDmyWd(first)} по московскому времени. Закройте время, в которое вы не принимаете.`,
+          `Клиенты увидят выбранные окна с ${fmtDmyWd(first)} по московскому времени. Проверьте рабочие дни и время.`,
         parse_mode: 'HTML',
         reply_markup: monthNoticeKb(month),
       });

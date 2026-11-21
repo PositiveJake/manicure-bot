@@ -37,6 +37,7 @@ export const CB = {
 
 const btn = (text, callback_data) => ({ text, callback_data });
 const kb = (rows) => ({ inline_keyboard: rows });
+const selectedBtn = (text, callback) => ({ ...btn(`${text} ✓`, callback), style: 'success' });
 export const PHONE_HOME = '🏠 В главное меню';
 export const REMOVE_PHONE_KEYBOARD = { remove_keyboard: true };
 const home = () => btn(PHONE_HOME, CB.MAIN);
@@ -62,11 +63,11 @@ export function phoneBookingKb(dayIso) {
 
 // dayCb: { 'YYYY-MM-DD': callbackData | null } — null = день недоступен
 // dayLabel: { 'YYYY-MM-DD': текст }
-export function calendarKb(year, month, minYM, maxYM, navPrefix, dayCb, dayLabel) {
+export function calendarKb(year, month, minYM, maxYM, navPrefix, dayCb, dayLabel, selectedDays = new Set()) {
   const ym = year * 100 + month;
   const prevYM = month > 1 ? ym - 1 : (year - 1) * 100 + 12;
   const nextYM = month < 12 ? ym + 1 : (year + 1) * 100 + 1;
-  const rows = [[
+  const rows = [minYM === maxYM ? [btn(monthTitle(ym), CB.NOOP)] : [
     btn('◀️', prevYM >= minYM ? `${navPrefix}:${prevYM}` : CB.NOOP),
     btn(monthTitle(ym), CB.NOOP),
     btn('▶️', nextYM <= maxYM ? `${navPrefix}:${nextYM}` : CB.NOOP),
@@ -78,7 +79,9 @@ export function calendarKb(year, month, minYM, maxYM, navPrefix, dayCb, dayLabel
   for (let i = 0; i < offset; i++) cells.push(btn(' ', CB.NOOP));
   for (let dnum = 1; dnum <= days; dnum++) {
     const d = `${year}-${pad2(month)}-${pad2(dnum)}`;
-    cells.push(btn(dayLabel[d] ?? String(dnum), dayCb[d] || CB.NOOP));
+    const label = dayLabel[d] ?? String(dnum);
+    const callback = dayCb[d] || CB.NOOP;
+    cells.push(selectedDays.has(d) ? selectedBtn(label, callback) : btn(label, callback));
   }
   for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
   return kb(rows);
@@ -234,28 +237,40 @@ export function nearestKb(bookings, range, page, hasNext) {
   return kb(rows);
 }
 
-export function ownerPanelKb() {
-  return kb([[btn('⬅️ В панель', CB.ADMIN), home()]]);
-}
-
-export function nextMonthKb(days) {
-  const rows = days.map(({ date, slots }) => {
-    const open = slots.filter(({ status }) => status === 'open').length;
-    const label = `${WEEKDAYS_RU[weekdayIndex(date)]}, ${fmtDmy(date).slice(0, 5)} · свободно ${open}`;
-    return [btn(label, `${CB.NEXT_DAY}:${date}`)];
-  });
+export function freeWindowsKb(page, pages) {
+  const rows = [];
+  if (pages > 1) {
+    const nav = [];
+    if (page > 0) nav.push(btn('◀️', `${CB.FREE}:${page - 1}`));
+    nav.push(btn(`${page + 1}/${pages}`, CB.NOOP));
+    if (page + 1 < pages) nav.push(btn('▶️', `${CB.FREE}:${page + 1}`));
+    rows.push(nav);
+  }
   rows.push([btn('⬅️ В панель', CB.ADMIN), home()]);
   return kb(rows);
 }
 
+export function nextMonthKb(ym, days) {
+  const dayCallbacks = {};
+  const selectedDays = new Set();
+  for (const { date, slots } of days) {
+    dayCallbacks[date] = `${CB.NEXT_DAY}:${date}`;
+    if (slots.some(({ selected }) => selected)) selectedDays.add(date);
+  }
+  const markup = calendarKb(Math.floor(ym / 100), ym % 100, ym, ym, CB.NEXT_MONTH, dayCallbacks, {}, selectedDays);
+  markup.inline_keyboard.push([btn('⬅️ В панель', CB.ADMIN), home()]);
+  return markup;
+}
+
 export function nextDayKb(day) {
-  const rows = day.slots.map(({ time, status }) => {
-    if (status === 'booked') return [btn(`${time} · занято`, CB.NOOP)];
-    const isOpen = status === 'open';
-    return [btn(isOpen ? `${time} · закрыть` : `${time} · открыть`,
-      `${CB.NEXT_SLOT}:${day.date}|${time}|${isOpen ? 1 : 0}`)];
+  const buttons = day.slots.map(({ time, selected, booked }) => {
+    const label = booked ? `${time} 🔒` : time;
+    const callback = booked ? CB.NOOP : `${CB.NEXT_SLOT}:${day.date}|${time}|${selected ? 1 : 0}`;
+    return selected ? selectedBtn(label, callback) : btn(label, callback);
   });
-  rows.push([btn('⬅️ К списку дней', CB.NEXT_MONTH), home()]);
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 4) rows.push(buttons.slice(i, i + 4));
+  rows.push([btn('⬅️ К календарю', CB.NEXT_MONTH), home()]);
   return kb(rows);
 }
 

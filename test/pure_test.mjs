@@ -124,7 +124,10 @@ ok('клавиатура Telegram запрашивает контакт', phoneK
 
 {
   const known = /^(noop|menu:(main|book|mine|phone|admin)|phone:cancel|ccal:\d{6}|cday:\d{4}-\d{2}-\d{2}|cslot:[\d-]+\|[\d:]+|ccf:[\d-]+\|[\d:]+|ccn|cancelq:\d+|cancel2:\d+|acal:\d{6}|aday:\d{4}-\d{2}-\d{2}|abk:\d+|aupd:\d+|aup2:\d+|blk:\d+:[a-z:0-9]+|acl:\d+|aclu:\d+|nearest(?::(7|30|all):\d+)?|blocked|freewindows|nextmonth(?::\d{6})?|nextday:[\d-]+|nextslot:[\d-]+\|[\d:]+\|[01])$/;
-  const nextDay = { date: '2026-11-04', slots: [{time: '12:00', status: 'open'}, {time: '14:30', status: 'closed'}] };
+  const nextDay = { date: '2026-11-04', slots: [
+    { time: '12:00', selected: true, booked: false },
+    { time: '14:30', selected: false, booked: false },
+  ] };
   const kbs = [
     mainMenuKb(true), mainMenuKb(false), bookingDoneKb(), phoneBookingKb('2026-10-14'),
     clientCalendarKb(202610, ['2026-10-14']),
@@ -140,7 +143,7 @@ ok('клавиатура Telegram запрашивает контакт', phoneK
     clientDetailKb(42, true),
     blockedKb([{ tg_id: 42, name: 'A' }]),
     nearestKb([{ id: 3, date: '2026-10-12', time: '10:00', user_name: 'B' }], 'all', 1, true),
-    monthNoticeKb(202611), nextMonthKb([nextDay]), nextDayKb(nextDay),
+    monthNoticeKb(202611), nextMonthKb(202611, [nextDay]), nextDayKb(nextDay),
   ];
   for (const kb of kbs) {
     for (const b of flat(kb)) {

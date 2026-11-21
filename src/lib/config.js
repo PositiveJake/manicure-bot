@@ -6,6 +6,11 @@ export const WORK_SLOTS = {
   4: ['12:00', '14:30', '17:00'],
   6: ['10:30', '13:00', '15:30'],
 };
+export const SELECTABLE_TIMES = Array.from({ length: 19 }, (_, index) => {
+  const hour = 10 + Math.floor(index / 2);
+  const minute = index % 2 === 0 ? '00' : '30';
+  return `${hour}:${minute}`;
+});
 export const APPOINTMENT_MINUTES = 45;
 export const ADMIN_MONTHS_AHEAD = 2;    // на сколько месяцев вперёд виден календарь владельца
 export const ADMIN_MONTHS_BACK = 2;      // глубина календаря владельца в прошлое

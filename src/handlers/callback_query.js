@@ -1,5 +1,5 @@
 import { currentYm, fmtDmyWd, isValidYmd, shiftYm, ymOfYmd } from '../lib/dates.js';
-import { scheduledTimes } from '../lib/availability.js';
+import { SELECTABLE_TIMES } from '../lib/config.js';
 import { answerCb, editMsg, notifyOwners, esc, sendMsg } from '../lib/ui.js';
 import { CB, backKb, bookingDoneKb, phoneBookingKb, phoneKb, REMOVE_PHONE_KEYBOARD } from '../lib/keyboards.js';
 import * as repo from '../lib/repo.js';
@@ -188,10 +188,10 @@ async function route(ctx, data) {
     return;
   }
 
-  if (data === CB.FREE) {
+  if (data === CB.FREE || after(CB.FREE) !== null) {
     if (!own) return denyOwner(ctx);
     await ctx.answerCb();
-    await views.renderFreeWindows(ctx);
+    await views.renderFreeWindows(ctx, parseIntOr(after(CB.FREE), 0));
     return;
   }
 
@@ -224,18 +224,14 @@ async function route(ctx, data) {
       if (!own) return denyOwner(ctx);
       const [day, time, state] = payload.split('|');
       const month = shiftYm(currentYm(), 1);
-      if (!isValidYmd(day) || ymOfYmd(day) !== month || !scheduledTimes(day).includes(time)
+      if (!isValidYmd(day) || ymOfYmd(day) !== month || !SELECTABLE_TIMES.includes(time)
         || (state !== '0' && state !== '1')) {
         await ctx.answerCb('Это окно уже нельзя изменить здесь.', true);
         return;
       }
-      if (state === '1') {
-        const closed = await repo.closeSlot(db, day, time);
-        await ctx.answerCb(closed ? 'Окно закрыто.' : 'Окно уже закрыто или занято.');
-      } else {
-        await repo.reopenSlot(db, day, time);
-        await ctx.answerCb('Окно открыто.');
-      }
+      const selected = state === '0';
+      const updated = await repo.setSlotSelected(db, day, time, selected);
+      await ctx.answerCb(updated ? (selected ? 'Окно выбрано.' : 'Окно снято.') : 'Это время занято.');
       await views.renderNextDay(ctx, day, month);
       return;
     }

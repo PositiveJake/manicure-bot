@@ -19,7 +19,7 @@ const ok = (name, cond) => {
 for (const name of [
   'getUser', 'upsertUser', 'requestPhone', 'cancelPhoneRequest', 'verifyPhone', 'setBlocked',
   'createBooking', 'getBooking', 'deleteBooking', 'getUserBookings',
-  'getSlotOccupancy', 'closeSlot', 'reopenSlot', 'claimMonthNotice', 'markMonthNoticeSent',
+  'getSlotOccupancy', 'setSlotSelected', 'claimMonthNotice', 'markMonthNoticeSent',
   'getDayCounts', 'getBookingsForDay', 'getAllBookings',
   'getBookingsBetween', 'getUnsentReminders', 'claimReminder', 'saveReminderProgress',
   'listUsersPage', 'countUsers', 'listBlocked', 'allBookingsForExport',

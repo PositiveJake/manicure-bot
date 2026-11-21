@@ -1,7 +1,7 @@
 import { ADMIN_MONTHS_AHEAD, ADMIN_MONTHS_BACK } from './config.js';
 import {
   todayIso, nowHm, currentYm, clampYm, ymOfYmd,
-  fmtDmyWd, shiftYmd, shiftYm, isValidYmd, nowLocal, ymd, hm, monthBounds, monthTitle,
+  fmtDmyWd, shiftYmd, shiftYm, isValidYmd, nowLocal, ymd, hm, monthBounds,
 } from './dates.js';
 import { availableDays, freeSlots, readSchedule } from './availability.js';
 import * as repo from './repo.js';
@@ -10,13 +10,14 @@ import {
   mainMenuKb, clientCalendarKb, adminCalendarKb, slotsKb, confirmKb,
   myBookingsKb, cancelConfirmKb, adminDayKb, bookingDetailKb,
   adminCancelConfirmKb, clientsKb, clientDetailKb, blockedKb, nearestKb,
-  ownerPanelKb, nextMonthKb, nextDayKb,
+  freeWindowsKb, nextMonthKb, nextDayKb,
 } from './keyboards.js';
 
 export { freeSlots, isBookableSlot } from './availability.js';
 
 const CLIENTS_PER_PAGE = 8;
 const BOOKINGS_PER_PAGE = 8;
+const FREE_DAYS_PER_PAGE = 12;
 
 // ---------- клиент ----------
 
@@ -273,26 +274,33 @@ export async function renderNearest(ctx, range = '30', page = 0) {
     nearestKb(visible, range, page, bookings.length > BOOKINGS_PER_PAGE));
 }
 
-export async function renderFreeWindows(ctx) {
+export async function renderFreeWindows(ctx, page = 0) {
   const now = nowLocal();
   const month = ymOfYmd(ymd(now));
   const days = await availableDays(ctx.db, now, monthBounds(month).last);
-  const lines = days.map(({ date, times }) => `• ${fmtDmyWd(date)} — <b>${times.join(', ')}</b>`);
-  await ctx.editMsg(`🟢 <b>Свободные окна до конца месяца</b>\n\n${lines.join('\n') || 'Свободных окон нет.'}`, ownerPanelKb());
+  const pages = Math.max(1, Math.ceil(days.length / FREE_DAYS_PER_PAGE));
+  page = Math.max(0, Math.min(page, pages - 1));
+  const start = page * FREE_DAYS_PER_PAGE;
+  const lines = days.slice(start, start + FREE_DAYS_PER_PAGE)
+    .map(({ date, times }) => `• ${fmtDmyWd(date)} — <b>${times.join(', ')}</b>`);
+  await ctx.editMsg(`🟢 <b>Свободные окна до конца месяца</b>\n\n${lines.join('\n') || 'Свободных окон нет.'}`,
+    freeWindowsKb(page, pages));
 }
 
 export async function renderNextMonth(ctx, month) {
   const { first, last } = monthBounds(month);
-  const days = await readSchedule(ctx.db, first, last);
-  await ctx.editMsg(`🗓 <b>Окна на следующий месяц · ${monthTitle(month)}</b>\n\n` +
-    `Открытые окна станут доступны клиентам с ${fmtDmyWd(first)} по московскому времени. Выберите день для настройки.`, nextMonthKb(days));
+  const days = await readSchedule(ctx.db, first, last, { editable: true });
+  await ctx.editMsg('🗓 <b>Окна на следующий месяц</b>\n\n' +
+    `Выберите любую дату. Зелёным отмечены дни с выбранными окнами.\n` +
+    `Запись откроется ${fmtDmyWd(first)} по московскому времени.`, nextMonthKb(month, days));
 }
 
 export async function renderNextDay(ctx, day, month) {
-  const [schedule] = isValidYmd(day) && ymOfYmd(day) === month ? await readSchedule(ctx.db, day, day) : [];
+  const [schedule] = isValidYmd(day) && ymOfYmd(day) === month
+    ? await readSchedule(ctx.db, day, day, { editable: true }) : [];
   if (!schedule) {
     await renderNextMonth(ctx, month);
     return;
   }
-  await ctx.editMsg(`🗓 <b>${fmtDmyWd(day)}</b>\n\nВыберите окно, чтобы закрыть или открыть его для записи.`, nextDayKb(schedule));
+  await ctx.editMsg(`🗓 <b>${fmtDmyWd(day)}</b>\n\nНажмите на время, чтобы выбрать или снять окно. Зелёные окна откроются для записи. 🔒 — занято.`, nextDayKb(schedule));
 }
