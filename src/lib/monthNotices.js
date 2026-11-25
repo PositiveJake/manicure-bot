@@ -1,14 +1,15 @@
-import { MONTH_REVIEW_DAYS, MONTH_REVIEW_TIME } from './config.js';
-import { fmtDmyWd, hm, monthBounds, monthTitle, nowLocal, shiftYm, shiftYmd, ymd, ymOfYmd } from './dates.js';
+import { MONTH_REVIEW_TIME } from './config.js';
+import { fmtDmyWd, hm, monthTitle, nowLocal, shiftYm, shiftYmd, ymd, ymOfYmd } from './dates.js';
 import { monthNoticeKb } from './keyboards.js';
 import { claimMonthNotice, markMonthNoticeSent } from './repo.js';
+import { bookingOpensOn } from './slotRules.js';
 
 export async function sendMonthNotices(api, db, ownerIds, now = nowLocal(), timestamp = Date.now()) {
   const today = ymd(now);
   const month = shiftYm(ymOfYmd(today), 1);
-  const { first } = monthBounds(month);
-  const due = shiftYmd(first, -MONTH_REVIEW_DAYS);
-  if (`${today}T${hm(now)}` < `${due}T${MONTH_REVIEW_TIME}`) return;
+  const opens = bookingOpensOn(month);
+  const due = shiftYmd(opens, -1);
+  if (today !== due || hm(now) < MONTH_REVIEW_TIME) return;
 
   const until = timestamp + 15 * 60_000;
   for (const ownerId of ownerIds) {
@@ -17,7 +18,7 @@ export async function sendMonthNotices(api, db, ownerIds, now = nowLocal(), time
       await api.sendMessage({
         chat_id: ownerId,
         text: `🗓 <b>Проверьте окна · ${monthTitle(month)}</b>\n\n` +
-          `Клиенты увидят выбранные окна с ${fmtDmyWd(first)} по московскому времени. Проверьте рабочие дни и время.`,
+          `Запись откроется ${fmtDmyWd(opens)} в 00:00 по Москве. Проверьте рабочие дни и время до открытия.`,
         parse_mode: 'HTML',
         reply_markup: monthNoticeKb(month),
       });

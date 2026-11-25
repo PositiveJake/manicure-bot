@@ -87,9 +87,11 @@ export function calendarKb(year, month, minYM, maxYM, navPrefix, dayCb, dayLabel
   return kb(rows);
 }
 
-export function clientCalendarKb(ym, freeDays) {
+export function clientCalendarKb(ym, freeDays, months = [ym]) {
   const weekdayNames = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
-  const rows = [[btn(monthTitle(ym), CB.NOOP)]];
+  const rows = [months.map((month) => month === ym
+    ? btn(monthTitle(month), CB.NOOP)
+    : btn(monthTitle(month), `${CB.CCAL}:${month}`))];
   for (const day of freeDays) {
     rows.push([btn(`${weekdayNames[weekdayIndex(day)]}, ${fmtDmy(day).slice(0, 5)}`, `${CB.CDAY}:${day}`)]);
   }

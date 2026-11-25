@@ -62,7 +62,7 @@ async function route(ctx, data) {
 
   if (data === CB.BOOK || data === CB.CCN || after(CB.CCAL) !== null) {
     await ctx.answerCb();
-    await views.renderClientCalendar(ctx);
+    await views.renderClientCalendar(ctx, parseIntOr(after(CB.CCAL), undefined));
     return;
   }
 
@@ -95,7 +95,7 @@ async function route(ctx, data) {
       const [dayIso, slot] = payload.split('|');
       if (!views.isBookableSlot(dayIso, slot)) {
         await ctx.answerCb('Это время уже недоступно. Выберите другое.', true);
-        await views.renderClientCalendar(ctx);
+        await views.renderClientCalendar(ctx, isValidYmd(dayIso) ? ymOfYmd(dayIso) : undefined);
         return;
       }
       if (!ctx.user?.phone_verified || !ctx.user.phone) {

@@ -14,7 +14,7 @@ export const SELECTABLE_TIMES = Array.from({ length: 19 }, (_, index) => {
 export const APPOINTMENT_MINUTES = 45;
 export const ADMIN_MONTHS_AHEAD = 2;    // на сколько месяцев вперёд виден календарь владельца
 export const ADMIN_MONTHS_BACK = 2;      // глубина календаря владельца в прошлое
-export const MONTH_REVIEW_DAYS = 7;
+export const NEXT_MONTH_BOOKING_DAY = 25;
 export const MONTH_REVIEW_TIME = '12:00';
 
 // Местное время салона: смещение от UTC в часах (Москва = 3, летнего времени нет)

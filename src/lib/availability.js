@@ -1,10 +1,10 @@
 import { APPOINTMENT_MINUTES, SELECTABLE_TIMES } from './config.js';
-import { hm, isValidYmd, nowLocal, shiftYmd, ymd, ymOfYmd } from './dates.js';
+import { hm, isValidYmd, monthBounds, nowLocal, shiftYmd, ymd, ymOfYmd } from './dates.js';
 import { getSlotOccupancy } from './repo.js';
-import { defaultTimes } from './slotRules.js';
+import { defaultTimes, lastBookableMonth } from './slotRules.js';
 
 function isBookableDay(day, today) {
-  return isValidYmd(day) && day >= today && ymOfYmd(day) === ymOfYmd(today);
+  return isValidYmd(day) && day >= today && ymOfYmd(day) <= lastBookableMonth(today);
 }
 
 export function isBookableSlot(day, slot, now = nowLocal()) {
@@ -48,10 +48,11 @@ export async function readSchedule(db, first, last, { editable = false } = {}) {
   return days;
 }
 
-export async function availableDays(db, now, last) {
+export async function availableDays(db, now, month) {
   const today = ymd(now);
   const time = hm(now);
-  return (await readSchedule(db, today, last)).map(({ date, slots }) => ({
+  const { first, last } = monthBounds(month);
+  return (await readSchedule(db, today > first ? today : first, last)).map(({ date, slots }) => ({
     date,
     times: slots.filter((slot) => !slot.booked && (date > today || slot.time > time)).map((slot) => slot.time),
   })).filter(({ times }) => times.length);

@@ -6,7 +6,7 @@ import worker from '../src/worker.js';
 import { connectD1 } from '../src/lib/d1.js';
 import { shiftYm, shiftYmd, todayIso } from '../src/lib/dates.js';
 import { sweepReminders } from '../src/lib/reminders.js';
-import { freeSlots, renderNearest } from '../src/lib/views.js';
+import { freeSlots, isBookableSlot, renderNearest } from '../src/lib/views.js';
 import { setSlotSelected, createBooking } from '../src/lib/repo.js';
 import { sendMonthNotices } from '../src/lib/monthNotices.js';
 
@@ -215,6 +215,21 @@ test('Telegram webhook covers booking, blocked buttons, owner cancellation and p
   await request(button(client, `ccf:${decemberDay}|14:30`));
   assert.equal(count(), 0);
 
+  t.mock.timers.setTime(Date.parse('2026-11-24T20:59:59Z'));
+  await request(button(client, 'ccal:202612'));
+  assert.ok(callbackKeys().every((b) => b.text !== 'Декабрь 2026'));
+  t.mock.timers.setTime(Date.parse('2026-11-24T21:00:00Z'));
+  await request(button(client, 'menu:book'));
+  assert.ok(callbackKeys().some((b) => b.callback_data === 'ccal:202612'));
+  assert.ok(callbackKeys().some((b) => b.text === 'Ноябрь 2026'));
+  await request(button(client, 'ccal:202612'));
+  assert.ok(callbackKeys().some((b) => b.callback_data === 'ccal:202611'));
+  assert.ok(callbackKeys().some((b) => b.callback_data === `cday:${extraDay}`));
+  assert.ok(callbackKeys().filter((b) => b.callback_data.startsWith('cday:'))
+    .every((b) => b.callback_data.startsWith('cday:2026-12-')));
+  await request(button(client, `cday:${decemberDay}`));
+  assert.deepEqual(callbackKeys().filter((b) => b.callback_data.startsWith('cslot:')).map((b) => b.text), ['14:30', '17:00']);
+
   t.mock.timers.setTime(Date.parse('2026-11-30T21:00:00Z'));
   await request(button(owner, `nextslot:${decemberDay}|12:00|0`));
   assert.match(calls.at(-1).body.text, /нельзя изменить/);
@@ -307,8 +322,19 @@ test('monthly owner notices start at the Moscow deadline and retry only failed d
   await sendMonthNotices(api, db, [owner, secondOwner], due, timestamp + 900_000);
   await sendMonthNotices(api, db, [owner, secondOwner], due, timestamp + 1_800_000);
   assert.deepEqual(calls.map((message) => message.chat_id), [owner, secondOwner, secondOwner]);
-  await sendMonthNotices(api, db, [owner], new Date('2026-12-25T12:00:00Z'), timestamp + 3_600_000);
+  assert.match(calls[0].text, /25\.11\.2026.*00:00/);
+  await sendMonthNotices(api, db, [owner], new Date('2026-12-25T00:00:00Z'), timestamp + 3_600_000);
+  assert.equal(calls.length, 3);
+  await sendMonthNotices(api, db, [owner], new Date('2026-12-24T12:00:00Z'), timestamp + 3_600_000);
   assert.equal(calls.at(-1).reply_markup.inline_keyboard[0][0].callback_data, 'nextmonth:202701');
+});
+
+test('a next-month slot can be confirmed starting at midnight of the 25th', () => {
+  assert.equal(isBookableSlot('2027-01-01', '12:00', new Date('2026-12-24T23:59:59Z')), false);
+  const open = new Date('2026-12-25T00:00:00Z');
+  assert.equal(isBookableSlot('2027-01-01', '12:00', open), true);
+  assert.equal(isBookableSlot('2026-12-25', '12:00', open), true);
+  assert.equal(isBookableSlot('2027-02-01', '12:00', open), false);
 });
 
 test('calendar navigation crosses the year boundary', () => {

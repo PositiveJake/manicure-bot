@@ -4,6 +4,7 @@ import {
   fmtDmyWd, shiftYmd, shiftYm, isValidYmd, nowLocal, ymd, hm, monthBounds,
 } from './dates.js';
 import { availableDays, freeSlots, readSchedule } from './availability.js';
+import { bookingOpensOn, lastBookableMonth } from './slotRules.js';
 import * as repo from './repo.js';
 import { esc } from './ui.js';
 import {
@@ -25,12 +26,16 @@ export async function renderMainMenu(ctx) {
   await ctx.editMsg('💅 <b>Запись на маникюр</b>\n\nВыберите действие:', mainMenuKb(ctx.isOwner));
 }
 
-export async function renderClientCalendar(ctx) {
+export async function renderClientCalendar(ctx, requestedMonth) {
   const now = nowLocal();
-  const month = ymOfYmd(ymd(now));
-  const days = await availableDays(ctx.db, now, monthBounds(month).last);
-  const text = days.length ? '📅 Выберите рабочий день.' : '📅 На этот месяц свободных дней нет.';
-  await ctx.editMsg(text, clientCalendarKb(month, days.map(({ date }) => date)));
+  const today = ymd(now);
+  const current = ymOfYmd(today);
+  const last = lastBookableMonth(today);
+  const months = current === last ? [current] : [current, last];
+  const month = months.includes(requestedMonth) ? requestedMonth : current;
+  const days = await availableDays(ctx.db, now, month);
+  const text = days.length ? '📅 Выберите рабочий день.' : '📅 В выбранном месяце свободных дней нет.';
+  await ctx.editMsg(text, clientCalendarKb(month, days.map(({ date }) => date), months));
 }
 
 export async function renderSlots(ctx, chatId, messageId, dayIso, alertViaAnswer) {
@@ -38,7 +43,7 @@ export async function renderSlots(ctx, chatId, messageId, dayIso, alertViaAnswer
   const slots = await freeSlots(db, dayIso);
   if (!slots.length) {
     if (alertViaAnswer) await ctx.answerCb('На этот день свободных слотов уже нет', true);
-    await renderClientCalendar(ctx);
+    await renderClientCalendar(ctx, isValidYmd(dayIso) ? ymOfYmd(dayIso) : undefined);
     return;
   }
   if (alertViaAnswer) await ctx.answerCb();
@@ -277,7 +282,7 @@ export async function renderNearest(ctx, range = '30', page = 0) {
 export async function renderFreeWindows(ctx, page = 0) {
   const now = nowLocal();
   const month = ymOfYmd(ymd(now));
-  const days = await availableDays(ctx.db, now, monthBounds(month).last);
+  const days = await availableDays(ctx.db, now, month);
   const pages = Math.max(1, Math.ceil(days.length / FREE_DAYS_PER_PAGE));
   page = Math.max(0, Math.min(page, pages - 1));
   const start = page * FREE_DAYS_PER_PAGE;
@@ -290,9 +295,11 @@ export async function renderFreeWindows(ctx, page = 0) {
 export async function renderNextMonth(ctx, month) {
   const { first, last } = monthBounds(month);
   const days = await readSchedule(ctx.db, first, last, { editable: true });
+  const opens = bookingOpensOn(month);
+  const opening = todayIso() < opens ? 'Запись откроется' : 'Запись открыта с';
   await ctx.editMsg('🗓 <b>Окна на следующий месяц</b>\n\n' +
     `Выберите любую дату. Зелёным отмечены дни с выбранными окнами.\n` +
-    `Запись откроется ${fmtDmyWd(first)} по московскому времени.`, nextMonthKb(month, days));
+    `${opening} ${fmtDmyWd(opens)} в 00:00 по московскому времени.`, nextMonthKb(month, days));
 }
 
 export async function renderNextDay(ctx, day, month) {
